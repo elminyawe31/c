@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════
-#  ELMINYAWE SERVER - ULTIMATE EDITION v2.0
+#  ELMINYAWE SERVER - ULTIMATE EDITION v2.0 (FIXED)
 #  Advanced Docker Container with VPN, Proxy & Game Panel
 # ═══════════════════════════════════════════════════════════════
 FROM ubuntu:24.04
@@ -56,36 +56,24 @@ ENV C_RESET="\033[0m" \
 RUN echo -e "${C_CYAN}[STAGE 1/7] Updating system & installing base packages...${C_RESET}" && \
     apt-get update -y || (sleep 5 && apt-get update -y) && \
     apt-get install -y --no-install-recommends \
-    # System essentials
     openssh-server sudo curl wget git vim nano htop tmux \
     zip unzip tar rsync net-tools iproute2 iputils-ping dnsutils \
-    # Build tools
     build-essential cmake pkg-config \
-    # Python ecosystem
     python3 python3-pip python3-venv python3-dev \
-    # Certificates & crypto
     ca-certificates gnupg lsb-release \
     software-properties-common \
-    # Locale & timezone
     locales tzdata \
-    # Utilities
     cron bash-completion man-db jq less file passwd \
     openssh-client sqlite3 \
-    # Libraries
     make libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
-    libsqlite3-dev libncursesw5-dev xz-utils tk-dev \
+    libsqlite3-dev libncurses-dev xz-utils tk-dev \
     libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev \
-    # Process management
     supervisor nginx \
-    # VPN dependencies
-    wireguard-tools wireguard iptables ipset \
-    # Network tools
+    wireguard-tools iptables ipset \
     socat netcat-openbsd proxychains4 \
-    # Chrome/FlareSolverr deps (optional)
-    fonts-liberation libappindicator3-1 libasound2 \
+    fonts-liberation libappindicator3-1 libasound2t64 \
     libatk-bridge2.0-0 libnspr4 libnss3 libxss1 \
     xdg-utils libgbm1 libu2f-udev \
-    # Logging
     rsyslog logrotate && \
     locale-gen en_US.UTF-8 && \
     update-locale LANG=en_US.UTF-8 && \
@@ -315,9 +303,6 @@ socks -p1080
 
 # HTTP Proxy
 proxy -p8118
-
-# Admin interface (optional)
-# admin -p8082
 EOF
 RUN mkdir -p /etc/3proxy
 
@@ -422,15 +407,12 @@ from datetime import datetime
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
 
-# ─── Helpers ───
 def get_system_stats():
-    """Get current system statistics"""
     try:
         cpu = psutil.cpu_percent(interval=0.5)
         mem = psutil.virtual_memory()
         disk = psutil.disk_usage('/')
         net = psutil.net_io_counters()
-
         return {
             "cpu_percent": cpu,
             "memory": {
@@ -457,7 +439,6 @@ def get_system_stats():
         return {"error": str(e)}
 
 def get_service_status():
-    """Check status of all services"""
     services = {
         "ssh": {"port": 22, "name": "SSH Server"},
         "ttyd": {"port": 8081, "name": "Web Terminal"},
@@ -469,7 +450,6 @@ def get_service_status():
         "socks5": {"port": 1080, "name": "SOCKS5 Proxy"},
         "http_proxy": {"port": 8118, "name": "HTTP Proxy"}
     }
-
     status = {}
     for key, info in services.items():
         try:
@@ -485,11 +465,9 @@ def get_service_status():
             }
         except Exception as e:
             status[key] = {"name": info['name'], "port": info['port'], "status": f"error: {e}", "emoji": "⚠️"}
-
     return status
 
 def get_cloudflare_urls():
-    """Read Cloudflare tunnel URLs from log files"""
     import re
     urls = {}
     log_files = {
@@ -500,7 +478,6 @@ def get_cloudflare_urls():
         "vless": "/tmp/cf_vless.log",
         "trojan": "/tmp/cf_trojan.log"
     }
-
     for name, path in log_files.items():
         try:
             with open(path, 'r') as f:
@@ -509,13 +486,10 @@ def get_cloudflare_urls():
                 urls[name] = match.group(0) if match else "Waiting..."
         except:
             urls[name] = "Not available"
-
     return urls
 
-# ─── Routes ───
 @app.route('/')
 def home():
-    """Main status page"""
     return jsonify({
         "service": "ELMINYAWE SERVER v2.0",
         "status": "operational",
@@ -528,7 +502,6 @@ def home():
 
 @app.route('/health')
 def health():
-    """Simple health check"""
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat()
@@ -536,28 +509,22 @@ def health():
 
 @app.route('/services')
 def services():
-    """Detailed service status"""
     return jsonify(get_service_status())
 
 @app.route('/system')
 def system():
-    """System statistics"""
     return jsonify(get_system_stats())
 
 @app.route('/proxy-info')
 def proxy_info():
-    """VPN/Proxy configuration for clients"""
     cf_urls = get_cloudflare_urls()
-
     return jsonify({
         "ssh_tunnel": {
             "protocol": "SSH",
-            "description": "Connect via SSH to create SOCKS5 proxy",
             "host": os.environ.get("RAILWAY_TCP_PROXY_DOMAIN", "Use Railway TCP Proxy"),
             "port": os.environ.get("RAILWAY_TCP_PROXY_PORT", "22"),
             "username": "root",
             "password": os.environ.get("ROOT_PASSWORD", "ELMINYAWE"),
-            "local_socks5_port": 1080,
             "netmod_settings": {
                 "protocol": "SSH",
                 "host": "<Railway TCP Proxy Host>",
@@ -568,7 +535,6 @@ def proxy_info():
         },
         "vmess": {
             "protocol": "VMess",
-            "description": "VMess over WebSocket with TLS",
             "cloudflare_url": cf_urls.get("v2ray", "Waiting..."),
             "port": 443,
             "uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -577,7 +543,6 @@ def proxy_info():
             "network": "ws",
             "path": "/v2ray",
             "tls": True,
-            "sni": cf_urls.get("v2ray", "").replace("https://", "") if cf_urls.get("v2ray", "").startswith("https://") else "",
             "netmod_settings": {
                 "protocol": "VMess",
                 "address": cf_urls.get("v2ray", ""),
@@ -590,7 +555,6 @@ def proxy_info():
         },
         "vless": {
             "protocol": "VLESS",
-            "description": "VLESS over WebSocket with TLS",
             "cloudflare_url": cf_urls.get("vless", "Waiting..."),
             "port": 443,
             "uuid": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
@@ -609,7 +573,6 @@ def proxy_info():
         },
         "trojan": {
             "protocol": "Trojan",
-            "description": "Trojan over WebSocket with TLS",
             "cloudflare_url": cf_urls.get("trojan", "Waiting..."),
             "port": 443,
             "password": os.environ.get("ROOT_PASSWORD", "ELMINYAWE"),
@@ -628,7 +591,6 @@ def proxy_info():
         },
         "shadowsocks": {
             "protocol": "Shadowsocks",
-            "description": "Shadowsocks proxy",
             "port": 8388,
             "password": os.environ.get("ROOT_PASSWORD", "ELMINYAWE"),
             "method": "aes-256-gcm",
@@ -641,7 +603,6 @@ def proxy_info():
         },
         "socks5": {
             "protocol": "SOCKS5",
-            "description": "Direct SOCKS5 proxy (no encryption)",
             "port": 1080,
             "auth": "none",
             "netmod_settings": {
@@ -651,7 +612,6 @@ def proxy_info():
         },
         "http_proxy": {
             "protocol": "HTTP",
-            "description": "HTTP proxy (no encryption)",
             "port": 8118,
             "auth": "none"
         }
@@ -659,15 +619,13 @@ def proxy_info():
 
 @app.route('/speedtest')
 def speedtest():
-    """Run network speed test"""
     try:
         import speedtest
         s = speedtest.Speedtest()
         s.get_best_server()
-        download = s.download() / (1024**2)  # Mbps
-        upload = s.upload() / (1024**2)      # Mbps
+        download = s.download() / (1024**2)
+        upload = s.upload() / (1024**2)
         ping = s.results.ping
-
         return jsonify({
             "download_mbps": round(download, 2),
             "upload_mbps": round(upload, 2),
@@ -706,15 +664,12 @@ done
 
 python3 << 'PYEOF'
 import sqlite3, bcrypt, sys, os
-
 db_path = '/var/lib/pufferpanel/pufferpanel.db'
 try:
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
-
     c.execute("SELECT id FROM users WHERE email='ELMINYAWE@localhost.com'")
     user_row = c.fetchone()
-
     if not user_row:
         hashed = bcrypt.hashpw(b'ELMINYAWE', bcrypt.gensalt(10)).decode()
         c.execute("INSERT INTO users (username, email, password) VALUES (?, ?, ?)", 
@@ -725,9 +680,7 @@ try:
         print("✅ Admin User created.")
     else:
         print("ℹ️  Admin User already exists.")
-
     user_id = user_row[0]
-
     c.execute("SELECT 1 FROM permissions WHERE user_id=?", (user_id,))
     if not c.fetchone():
         c.execute("""
@@ -746,7 +699,6 @@ try:
         c.execute("UPDATE permissions SET admin=1 WHERE user_id=?", (user_id,))
         conn.commit()
         print("✅ Admin permissions updated.")
-
 except Exception as e:
     print(f"❌ Error: {e}")
 finally:
@@ -760,8 +712,6 @@ RUN chmod +x /usr/local/bin/setup-admin.sh
 # ─── Service Monitor Script ───
 COPY <<'EOF' /usr/local/bin/service-monitor.sh
 #!/usr/bin/env bash
-# Service health monitor with colored logs
-
 C_RESET="\033[0m"
 C_RED="\033[1;31m"
 C_GREEN="\033[1;32m"
@@ -774,13 +724,11 @@ log_service() {
     local name="$1"
     local port="$2"
     local status
-
     if nc -z 127.0.0.1 "$port" 2>/dev/null; then
         status="${C_GREEN}RUNNING${C_RESET}"
     else
         status="${C_RED}STOPPED${C_RESET}"
     fi
-
     printf "  %-20s Port %-5s %b\n" "$name" "$port" "$status"
 }
 
@@ -791,7 +739,6 @@ while true; do
     echo -e "${C_CYAN}╠══════════════════════════════════════════════════════════════╣${C_RESET}"
     echo -e "${C_YELLOW}  Time: $(date '+%Y-%m-%d %H:%M:%S UTC')${C_RESET}"
     echo -e "${C_CYAN}╠══════════════════════════════════════════════════════════════╣${C_RESET}"
-
     log_service "SSH Server" 22
     log_service "Web Terminal" 8081
     log_service "Flask API" 5001
@@ -803,9 +750,7 @@ while true; do
     log_service "Shadowsocks" 8388
     log_service "SOCKS5 Proxy" 1080
     log_service "HTTP Proxy" 8118
-
     echo -e "${C_CYAN}╚══════════════════════════════════════════════════════════════╝${C_RESET}"
-
     sleep 30
 done
 EOF
@@ -814,8 +759,6 @@ RUN chmod +x /usr/local/bin/service-monitor.sh
 # ─── Info Display Script ───
 COPY <<'EOF' /usr/local/bin/show-info.sh
 #!/usr/bin/env bash
-# Enhanced info display with colored output
-
 C_RESET="\033[0m"
 C_RED="\033[1;31m"
 C_GREEN="\033[1;32m"
@@ -834,7 +777,6 @@ get_cf_url() {
 
 while true; do
     sleep 15
-
     TTYD_URL=$(get_cf_url /tmp/cf_ttyd.log)
     API_URL=$(get_cf_url /tmp/cf_api.log)
     V2RAY_URL=$(get_cf_url /tmp/cf_v2ray.log)
@@ -847,21 +789,18 @@ while true; do
     echo -e "${C_CYAN}║${C_WHITE}           🚀 ELMINYAWE SERVER v2.0 - ULTIMATE EDITION                        ${C_CYAN}║${C_RESET}"
     echo -e "${C_CYAN}╠══════════════════════════════════════════════════════════════════════════════╣${C_RESET}"
 
-    # Web Terminal
     echo -e "${C_GREEN}  🌐 WEB TERMINAL (ttyd)${C_RESET}"
     echo -e "${C_WHITE}     URL  : ${C_YELLOW}${TTYD_URL:-Waiting for Cloudflare...}${C_RESET}"
     echo -e "${C_WHITE}     User : root${C_RESET}"
     echo -e "${C_WHITE}     Pass : ${C_MAGENTA}${ROOT_PASSWORD}${C_RESET}"
     echo -e "${C_CYAN}  ──────────────────────────────────────────────────────────────────────────${C_RESET}"
 
-    # API
     echo -e "${C_GREEN}  📡 API SERVER${C_RESET}"
     echo -e "${C_WHITE}     Cloudflare: ${C_YELLOW}${API_URL:-Waiting...}${C_RESET}"
     echo -e "${C_WHITE}     Local     : http://localhost:5001${C_RESET}"
     echo -e "${C_WHITE}     Endpoints : /health | /services | /system | /proxy-info | /speedtest${C_RESET}"
     echo -e "${C_CYAN}  ──────────────────────────────────────────────────────────────────────────${C_RESET}"
 
-    # PufferPanel
     echo -e "${C_GREEN}  🎮 PufferPanel${C_RESET}"
     echo -e "${C_WHITE}     Local: http://localhost:8080${C_RESET}"
     echo -e "${C_WHITE}     Nginx: ${C_YELLOW}${NGINX_URL:-Waiting...}${C_RESET}"
@@ -869,14 +808,12 @@ while true; do
     echo -e "${C_WHITE}     Pass : ${C_MAGENTA}ELMINYAWE${C_RESET}"
     echo -e "${C_CYAN}  ──────────────────────────────────────────────────────────────────────────${C_RESET}"
 
-    # SSH / SFTP
     echo -e "${C_GREEN}  🔒 SSH / SFTP${C_RESET}"
     echo -e "${C_WHITE}     SSH  : ssh -p 22 root@<host>${C_RESET}"
     echo -e "${C_WHITE}     SFTP : port 5657${C_RESET}"
     echo -e "${C_WHITE}     Pass : ${C_MAGENTA}${ROOT_PASSWORD}${C_RESET}"
     echo -e "${C_CYAN}  ──────────────────────────────────────────────────────────────────────────${C_RESET}"
 
-    # VPN Services
     echo -e "${C_GREEN}  🛡️  VPN / PROXY SERVICES${C_RESET}"
     echo -e "${C_CYAN}  ┌────────────────────────────────────────────────────────────────────────┐${C_RESET}"
 
@@ -885,7 +822,6 @@ while true; do
     echo -e "${C_CYAN}  │${C_WHITE}     Port   : 443 (via Cloudflare TLS)${C_RESET}"
     echo -e "${C_CYAN}  │${C_WHITE}     UUID   : ${C_MAGENTA}a1b2c3d4-e5f6-7890-abcd-ef1234567890${C_RESET}"
     echo -e "${C_CYAN}  │${C_WHITE}     Path   : /v2ray${C_RESET}"
-    echo -e "${C_CYAN}  │${C_WHITE}     Network: WebSocket${C_RESET}"
     echo -e "${C_CYAN}  │${C_WHITE}     TLS    : ✅ Enabled${C_RESET}"
     echo -e "${C_CYAN}  ├────────────────────────────────────────────────────────────────────────┤${C_RESET}"
 
