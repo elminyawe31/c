@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════
-# ELMINYAWE SERVER - ULTIMATE EDITION v2.1 (FIXED)
+# ELMINYAWE SERVER - ULTIMATE EDITION v2.2 (FIXED & ENHANCED)
 # ═══════════════════════════════════════════════════════════════
 FROM ubuntu:24.04
 
@@ -100,12 +100,14 @@ RUN bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-rel
 RUN apt-get update && apt-get install -y --no-install-recommends shadowsocks-libev && \
     rm -rf /var/lib/apt/lists/*
 
-# 3proxy (FIXED: create symlink to /usr/local/bin)
+# 3proxy (FIXED: build and install to correct path)
 RUN cd /tmp && \
     git clone --depth 1 https://github.com/z3APA3A/3proxy.git && \
     cd 3proxy && \
     make -f Makefile.Linux && \
-    make -f Makefile.Linux install && \
+    mkdir -p /usr/local/3proxy/bin && \
+    cp bin/3proxy /usr/local/3proxy/bin/3proxy && \
+    chmod +x /usr/local/3proxy/bin/3proxy && \
     ln -sf /usr/local/3proxy/bin/3proxy /usr/local/bin/3proxy && \
     rm -rf /tmp/3proxy
 
@@ -186,55 +188,55 @@ RUN mkdir -p /run/sshd && \
     echo "AllowTcpForwarding yes" >> /etc/ssh/sshd_config && \
     echo "GatewayPorts yes" >> /etc/ssh/sshd_config
 
-# Nginx Config (FIXED: escaped $ for nginx variables, no port 80 conflict)
+# Nginx Config (FIXED: removed colon after worker_connections)
 RUN cat > /etc/nginx/nginx.conf <<'NGINX'
 user root;
 worker_processes auto;
 error_log /var/log/nginx/error.log warn;
 pid /run/nginx.pid;
-events { worker_connections: 1024; }
+events { worker_connections 1024; }
 http {
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
-    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-                    '$status $body_bytes_sent "$http_referer" '
-                    '"$http_user_agent" "$http_x_forwarded_for"';
-    access_log /var/log/nginx/access.log main;
-    sendfile on;
-    keepalive_timeout 65;
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+  log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                  '$status $body_bytes_sent "$http_referer" '
+                  '"$http_user_agent" "$http_x_forwarded_for"';
+  access_log /var/log/nginx/access.log main;
+  sendfile on;
+  keepalive_timeout 65;
 
-    server {
-        listen 9090;
-        server_name _;
-        location / {
-            proxy_pass http://127.0.0.1:8080;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-        }
-        location /v2ray {
-            proxy_pass http://127.0.0.1:10086;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host $host;
-        }
-        location /vless {
-            proxy_pass http://127.0.0.1:10087;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host $host;
-        }
-        location /trojan {
-            proxy_pass http://127.0.0.1:10088;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection "upgrade";
-            proxy_set_header Host $host;
-        }
+  server {
+    listen 9090;
+    server_name _;
+    location / {
+      proxy_pass http://127.0.0.1:8080;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
     }
+    location /v2ray {
+      proxy_pass http://127.0.0.1:10086;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+    }
+    location /vless {
+      proxy_pass http://127.0.0.1:10087;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+    }
+    location /trojan {
+      proxy_pass http://127.0.0.1:10088;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+    }
+  }
 }
 NGINX
 RUN mkdir -p /var/log/nginx /run/nginx
@@ -245,7 +247,7 @@ RUN mkdir -p /var/log/nginx /run/nginx
 RUN mkdir -p /app /var/log/services
 
 RUN cat > /app/api.py <<'APIPY'
-import os, json, psutil, subprocess, time
+import os, json, psutil, subprocess, time, re
 from datetime import datetime
 from flask import Flask, jsonify
 
@@ -257,19 +259,18 @@ def read_cf_url(logfile):
     try:
         with open(logfile, 'r') as f:
             lines = f.readlines()
-            for line in reversed(lines):
-                if 'trycloudflare.com' in line:
-                    import re
-                    m = re.search(r'https://[a-z0-9\-]+\.trycloudflare\.com', line)
-                    if m:
-                        return m.group(0)
+        for line in reversed(lines):
+            if 'trycloudflare.com' in line:
+                m = re.search(r'https://[a-z0-9\-]+\.trycloudflare\.com', line)
+                if m:
+                    return m.group(0)
     except:
         pass
     return "Waiting..."
 
 @app.route('/')
 def index():
-    return jsonify({"name": "ELMINYAWE API", "version": "2.1", "status": "running"})
+    return jsonify({"name": "ELMINYAWE API", "version": "2.2", "status": "running"})
 
 @app.route('/health')
 def health():
@@ -363,14 +364,14 @@ try:
     c.execute("SELECT 1 FROM permissions WHERE user_id=?", (user_id,))
     if not c.fetchone():
         c.execute("""
-        INSERT INTO permissions (
-            user_id, admin, view_server, create_server, view_nodes, edit_nodes,
-            deploy_nodes, view_templates, edit_templates, edit_users, view_users,
-            edit_server_admin, delete_server, panel_settings, edit_server_data,
-            edit_server_users, install_server, update_server, view_server_console,
-            send_server_console, stop_server, start_server, view_server_stats,
-            view_server_files, sftp_server, put_server_files
-        ) VALUES (?, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)
+            INSERT INTO permissions (
+                user_id, admin, view_server, create_server, view_nodes, edit_nodes,
+                deploy_nodes, view_templates, edit_templates, edit_users, view_users,
+                edit_server_admin, delete_server, panel_settings, edit_server_data,
+                edit_server_users, install_server, update_server, view_server_console,
+                send_server_console, stop_server, start_server, view_server_stats,
+                view_server_files, sftp_server, put_server_files
+            ) VALUES (?, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)
         """, (user_id,))
         conn.commit()
         print("Admin permissions granted!")
@@ -396,9 +397,9 @@ while true; do
         name="${svc%%:*}"
         port="${svc##*:}"
         if nc -z 127.0.0.1 "$port" 2>/dev/null; then
-            echo "  $name: RUNNING"
+            echo "  $name: ✅ RUNNING"
         else
-            echo "  $name: STOPPED"
+            echo "  $name: ❌ STOPPED"
         fi
     done
     sleep 30
@@ -424,7 +425,7 @@ while true; do
     NGINX_URL=$(get_cf_url /tmp/cf_nginx.log)
     echo ""
     echo "=================================================="
-    echo "  ELMINYAWE SERVER v2.1 - RUNNING"
+    echo "  ELMINYAWE SERVER v2.2 - RUNNING"
     echo "=================================================="
     echo "  WEB TERMINAL: ${TTYD_URL:-Waiting...}"
     echo "  User: root | Pass: ${ROOT_PASSWORD}"
@@ -436,7 +437,7 @@ while true; do
     echo "  Nginx Proxy: ${NGINX_URL:-Waiting...}"
     echo "  Email: ELMINYAWE@localhost.com | Pass: ELMINYAWE"
     echo "--------------------------------------------------"
-    echo "  SSH: ssh -p 22 root@<host>"
+    echo "  SSH: ssh -p 22 root@"
     echo "  SFTP: port 5657"
     echo "--------------------------------------------------"
     echo "  VMess: ${V2RAY_URL:-Waiting...} | UUID: a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -453,7 +454,7 @@ RUN chmod +x /usr/local/bin/show-info.sh
 # ═══════════════════════════════════════════════════════════════
 # STAGE 7: SUPERVISOR
 # ═══════════════════════════════════════════════════════════════
-RUN mkdir -p /var/log/services /var/log/xray /var/log/nginx /var/log/supervisor /app /run/sshd
+RUN mkdir -p /var/log/services /var/log/xray /var/log/nginx /var/log/supervisor /app /run/sshd /run/nginx
 
 RUN cat > /etc/supervisor/conf.d/services.conf <<'SVCONF'
 [supervisord]
