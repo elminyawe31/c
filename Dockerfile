@@ -61,8 +61,8 @@ RUN apt-get update -y || (sleep 5 && apt-get update -y) && \
     supervisor nginx \
     wireguard-tools iptables ipset \
     socat netcat-openbsd proxychains4 \
-    fonts-liberation libappindicator3-1t64 libasound2t64 \
-    libatk-bridge2.0-0 libnspr4t64 libnss3t64 libxss1 \
+    fonts-liberation libappindicator3-1 libasound2t64 \
+    libatk-bridge2.0-0 libnspr4 libnss3 libxss1 \
     xdg-utils libgbm1 libu2f-udev \
     rsyslog logrotate && \
     locale-gen en_US.UTF-8 && \
@@ -192,7 +192,7 @@ user root;
 worker_processes auto;
 error_log /var/log/nginx/error.log warn;
 pid /run/nginx.pid;
-events { worker_connections 1024; }
+events { worker_connections: 1024; }
 http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
