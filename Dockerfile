@@ -1,5 +1,5 @@
 # ═══════════════════════════════════════════════════════════════
-# ELMINYAWE SERVER - ULTIMATE EDITION v2.2 (FIXED & ENHANCED)
+# ELMINYAWE SERVER - ULTIMATE EDITION v2.3 (5s refresh + Smart API)
 # ═══════════════════════════════════════════════════════════════
 FROM ubuntu:24.04
 
@@ -188,7 +188,7 @@ RUN mkdir -p /run/sshd && \
     echo "AllowTcpForwarding yes" >> /etc/ssh/sshd_config && \
     echo "GatewayPorts yes" >> /etc/ssh/sshd_config
 
-# Nginx Config (FIXED: removed colon after worker_connections)
+# Nginx Config
 RUN cat > /etc/nginx/nginx.conf <<'NGINX'
 user root;
 worker_processes auto;
@@ -242,7 +242,7 @@ NGINX
 RUN mkdir -p /var/log/nginx /run/nginx
 
 # ═══════════════════════════════════════════════════════════════
-# STAGE 5: API APP
+# STAGE 5: API APP (Smart /inf endpoint)
 # ═══════════════════════════════════════════════════════════════
 RUN mkdir -p /app /var/log/services
 
@@ -252,8 +252,6 @@ from datetime import datetime
 from flask import Flask, jsonify
 
 app = Flask(__name__)
-
-cf_urls = {}
 
 def read_cf_url(logfile):
     try:
@@ -270,7 +268,7 @@ def read_cf_url(logfile):
 
 @app.route('/')
 def index():
-    return jsonify({"name": "ELMINYAWE API", "version": "2.2", "status": "running"})
+    return jsonify({"name": "ELMINYAWE API", "version": "2.3", "status": "running"})
 
 @app.route('/health')
 def health():
@@ -306,6 +304,129 @@ def proxy_info():
         "http_proxy": {"protocol": "HTTP", "port": 8118, "auth": "none"}
     })
 
+@app.route('/inf')
+def inf():
+    """Smart endpoint: returns ALL connections and info from API itself"""
+    cf_logs = {
+        'ttyd': '/tmp/cf_ttyd.log',
+        'api': '/tmp/cf_api.log',
+        'v2ray': '/tmp/cf_v2ray.log',
+        'vless': '/tmp/cf_vless.log',
+        'trojan': '/tmp/cf_trojan.log',
+        'nginx': '/tmp/cf_nginx.log',
+    }
+    cf_urls = {}
+    for name, path in cf_logs.items():
+        cf_urls[name] = read_cf_url(path)
+    
+    root_pass = os.environ.get("ROOT_PASSWORD", "ELMINYAWE")
+    
+    def get_sni(url):
+        if url and url.startswith('https://'):
+            return url.replace('https://', '')
+        return 'Waiting...'
+    
+    return jsonify({
+        "server": {
+            "name": "ELMINYAWE SERVER",
+            "version": "2.3",
+            "status": "running",
+            "timestamp": datetime.utcnow().isoformat()
+        },
+        "access": {
+            "ssh": {
+                "host": "localhost",
+                "port": 22,
+                "user": "root",
+                "password": root_pass,
+                "command": f"ssh -p 22 root@<host>"
+            },
+            "sftp": {
+                "port": 5657
+            },
+            "ttyd": {
+                "cloudflare_url": cf_urls.get('ttyd', 'Waiting...'),
+                "local_url": "http://localhost:8081",
+                "user": "root",
+                "password": root_pass
+            },
+            "api": {
+                "cloudflare_url": cf_urls.get('api', 'Waiting...'),
+                "local_url": "http://localhost:5001",
+                "endpoints": ["/", "/health", "/system", "/services", "/proxy-info", "/inf", "/speedtest"]
+            },
+            "pufferpanel": {
+                "local_url": "http://localhost:8080",
+                "nginx_url": cf_urls.get('nginx', 'Waiting...'),
+                "email": "ELMINYAWE@localhost.com",
+                "password": "ELMINYAWE"
+            },
+            "nginx_proxy": {
+                "cloudflare_url": cf_urls.get('nginx', 'Waiting...'),
+                "local_url": "http://localhost:9090",
+                "routes": ["/ → PufferPanel", "/v2ray → VMess", "/vless → VLESS", "/trojan → Trojan"]
+            }
+        },
+        "proxies": {
+            "vmess": {
+                "protocol": "VMess",
+                "cloudflare_url": cf_urls.get('v2ray', 'Waiting...'),
+                "port": 443,
+                "uuid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                "path": "/v2ray",
+                "network": "ws",
+                "tls": True,
+                "sni": get_sni(cf_urls.get('v2ray', '')),
+                "local_port": 10086
+            },
+            "vless": {
+                "protocol": "VLESS",
+                "cloudflare_url": cf_urls.get('vless', 'Waiting...'),
+                "port": 443,
+                "uuid": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+                "path": "/vless",
+                "network": "ws",
+                "tls": True,
+                "sni": get_sni(cf_urls.get('vless', '')),
+                "local_port": 10087
+            },
+            "trojan": {
+                "protocol": "Trojan",
+                "cloudflare_url": cf_urls.get('trojan', 'Waiting...'),
+                "port": 443,
+                "password": root_pass,
+                "path": "/trojan",
+                "network": "ws",
+                "tls": True,
+                "sni": get_sni(cf_urls.get('trojan', '')),
+                "local_port": 10088
+            },
+            "shadowsocks": {
+                "protocol": "Shadowsocks",
+                "port": 8388,
+                "password": root_pass,
+                "method": "aes-256-gcm",
+                "note": "Use TCP Proxy in Railway for external access"
+            },
+            "socks5": {
+                "protocol": "SOCKS5",
+                "port": 1080,
+                "auth": "none"
+            },
+            "http_proxy": {
+                "protocol": "HTTP",
+                "port": 8118,
+                "auth": "none"
+            }
+        },
+        "system": {
+            "cpu_percent": psutil.cpu_percent(interval=0.5),
+            "memory": dict(psutil.virtual_memory()._asdict()),
+            "disk": dict(psutil.disk_usage('/')._asdict()),
+            "boot_time": datetime.fromtimestamp(psutil.boot_time()).isoformat()
+        }
+    })
+
 @app.route('/speedtest')
 def speedtest():
     try:
@@ -329,7 +450,7 @@ if __name__ == '__main__':
 APIPY
 
 # ═══════════════════════════════════════════════════════════════
-# STAGE 6: SCRIPTS
+# STAGE 6: SCRIPTS (5 seconds refresh)
 # ═══════════════════════════════════════════════════════════════
 
 RUN cat > /usr/local/bin/setup-admin.sh <<'ADMINSH'
@@ -402,7 +523,7 @@ while true; do
             echo "  $name: ❌ STOPPED"
         fi
     done
-    sleep 30
+    sleep 5
 done
 MONSH
 RUN chmod +x /usr/local/bin/service-monitor.sh
@@ -416,7 +537,7 @@ get_cf_url() {
     fi
 }
 while true; do
-    sleep 15
+    sleep 3
     TTYD_URL=$(get_cf_url /tmp/cf_ttyd.log)
     API_URL=$(get_cf_url /tmp/cf_api.log)
     V2RAY_URL=$(get_cf_url /tmp/cf_v2ray.log)
@@ -425,7 +546,7 @@ while true; do
     NGINX_URL=$(get_cf_url /tmp/cf_nginx.log)
     echo ""
     echo "=================================================="
-    echo "  ELMINYAWE SERVER v2.2 - RUNNING"
+    echo "  ELMINYAWE SERVER v2.3 - RUNNING"
     echo "=================================================="
     echo "  WEB TERMINAL: ${TTYD_URL:-Waiting...}"
     echo "  User: root | Pass: ${ROOT_PASSWORD}"
@@ -446,7 +567,7 @@ while true; do
     echo "  Shadowsocks: port 8388 | aes-256-gcm"
     echo "  SOCKS5: port 1080 | HTTP Proxy: port 8118"
     echo "=================================================="
-    sleep 35
+    sleep 2
 done
 INFOSH
 RUN chmod +x /usr/local/bin/show-info.sh
