@@ -4,6 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 ENV PYTHONUNBUFFERED=1
 ENV LANG=en_US.UTF-8
+ENV TERM=xterm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates openssl \
@@ -107,15 +108,17 @@ RUN curl -fsSL --output /usr/local/bin/cloudflared \
     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" && \
     chmod +x /usr/local/bin/cloudflared
 
-# ===== FIX 2: PufferPanel via apt-get install .deb (resolves deps) =====
+# ===== FIX 2: PufferPanel - extract binary from .deb directly =====
 RUN PUFFER_VERSION=$(curl -s https://api.github.com/repos/PufferPanel/PufferPanel/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/') && \
     echo "[*] Installing PufferPanel ${PUFFER_VERSION}..." && \
     curl -fsSL -o /tmp/pufferpanel.deb \
     "https://github.com/pufferpanel/pufferpanel/releases/download/${PUFFER_VERSION}/pufferpanel_${PUFFER_VERSION#v}_amd64.deb" && \
-    apt-get install -y --no-install-recommends /tmp/pufferpanel.deb && \
-    rm -f /tmp/pufferpanel.deb && \
+    dpkg-deb -x /tmp/pufferpanel.deb /tmp/pufferpanel-extract && \
+    cp /tmp/pufferpanel-extract/usr/bin/pufferpanel /usr/local/bin/pufferpanel && \
+    chmod +x /usr/local/bin/pufferpanel && \
     mkdir -p /var/lib/pufferpanel/email /var/lib/pufferpanel/servers /etc/pufferpanel /var/log/pufferpanel /var/www/pufferpanel && \
-    echo '{}' > /var/lib/pufferpanel/email/emails.json
+    echo '{}' > /var/lib/pufferpanel/email/emails.json && \
+    rm -rf /tmp/pufferpanel.deb /tmp/pufferpanel-extract
 
 RUN cat > /etc/pufferpanel/config.json << 'PPEOF'
 {
@@ -509,7 +512,7 @@ fi
 SAEOF
 RUN chmod +x /usr/local/bin/setup-admin.sh
 
-# ===== FIX 4: cloudflared command (tunnel --url not tunnel run --url) =====
+# ===== FIX 4: cloudflared quick tunnels =====
 RUN cat > /usr/local/bin/cf-tunnels.sh << 'CFEOF'
 #!/bin/bash
 mkdir -p /tmp/cf
@@ -607,8 +610,9 @@ autostart=true
 autorestart=true
 priority=30
 
+# ===== FIX 5: Use /usr/local/bin/pufferpanel =====
 [program:pufferpanel]
-command=/usr/bin/pufferpanel run
+command=/usr/local/bin/pufferpanel run
 autostart=true
 autorestart=true
 priority=40
@@ -648,7 +652,7 @@ startsecs=0
 priority=5
 CFSC
 
-# ===== FIX 5: entrypoint with $NF parsing + validation + fallback =====
+# ===== FIX 6: entrypoint with $NF parsing + validation + fallback =====
 RUN cat > /usr/local/bin/entrypoint.sh << 'EPEOF'
 #!/bin/bash
 set -e
@@ -671,8 +675,6 @@ echo "root:$ROOT_PASSWORD" | chpasswd
 echo "[*] Generating Xray Reality keys..."
 REALITY_KEYS=$(/usr/local/bin/xray x25519 2>/dev/null || echo "")
 if [ -n "$REALITY_KEYS" ]; then
-    # FIX: use $NF (last field) instead of $3 to handle all formats:
-    # PrivateKey: xxx  OR  Private key: xxx  OR  Password (PublicKey): yyy
     PRIVATE_KEY=$(echo "$REALITY_KEYS" | grep -i "private" | awk '{print $NF}')
     PUBLIC_KEY=$(echo "$REALITY_KEYS" | grep -iE "public|password.*public" | awk '{print $NF}')
     if [ -n "$PRIVATE_KEY" ] && [ -n "$PUBLIC_KEY" ]; then
