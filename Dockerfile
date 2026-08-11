@@ -107,15 +107,15 @@ RUN curl -fsSL --output /usr/local/bin/cloudflared \
     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" && \
     chmod +x /usr/local/bin/cloudflared
 
-# ===== FIX 2: PufferPanel from .deb release =====
+# ===== FIX 2: PufferPanel via apt-get install .deb (resolves deps) =====
 RUN PUFFER_VERSION=$(curl -s https://api.github.com/repos/PufferPanel/PufferPanel/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/') && \
     echo "[*] Installing PufferPanel ${PUFFER_VERSION}..." && \
     curl -fsSL -o /tmp/pufferpanel.deb \
     "https://github.com/pufferpanel/pufferpanel/releases/download/${PUFFER_VERSION}/pufferpanel_${PUFFER_VERSION#v}_amd64.deb" && \
-    dpkg -i /tmp/pufferpanel.deb || apt-get install -f -y --no-install-recommends && \
+    apt-get install -y --no-install-recommends /tmp/pufferpanel.deb && \
+    rm -f /tmp/pufferpanel.deb && \
     mkdir -p /var/lib/pufferpanel/email /var/lib/pufferpanel/servers /etc/pufferpanel /var/log/pufferpanel /var/www/pufferpanel && \
-    echo '{}' > /var/lib/pufferpanel/email/emails.json && \
-    rm -f /tmp/pufferpanel.deb
+    echo '{}' > /var/lib/pufferpanel/email/emails.json
 
 RUN cat > /etc/pufferpanel/config.json << 'PPEOF'
 {
@@ -648,7 +648,7 @@ startsecs=0
 priority=5
 CFSC
 
-# ===== FIX 5: entrypoint with validation + fallback keys =====
+# ===== FIX 5: entrypoint with $NF parsing + validation + fallback =====
 RUN cat > /usr/local/bin/entrypoint.sh << 'EPEOF'
 #!/bin/bash
 set -e
@@ -671,8 +671,10 @@ echo "root:$ROOT_PASSWORD" | chpasswd
 echo "[*] Generating Xray Reality keys..."
 REALITY_KEYS=$(/usr/local/bin/xray x25519 2>/dev/null || echo "")
 if [ -n "$REALITY_KEYS" ]; then
-    PRIVATE_KEY=$(echo "$REALITY_KEYS" | grep "Private key:" | awk '{print $3}')
-    PUBLIC_KEY=$(echo "$REALITY_KEYS" | grep "Public key:" | awk '{print $3}')
+    # FIX: use $NF (last field) instead of $3 to handle all formats:
+    # PrivateKey: xxx  OR  Private key: xxx  OR  Password (PublicKey): yyy
+    PRIVATE_KEY=$(echo "$REALITY_KEYS" | grep -i "private" | awk '{print $NF}')
+    PUBLIC_KEY=$(echo "$REALITY_KEYS" | grep -iE "public|password.*public" | awk '{print $NF}')
     if [ -n "$PRIVATE_KEY" ] && [ -n "$PUBLIC_KEY" ]; then
         echo "{\"private_key\":\"$PRIVATE_KEY\",\"public_key\":\"$PUBLIC_KEY\"}" > /etc/xray/reality_keys.json
         echo "[OK] Reality keys generated."
@@ -681,6 +683,8 @@ if [ -n "$REALITY_KEYS" ]; then
         echo "[OK] Injected Reality keys into Xray config."
     else
         echo "[WARN] Could not parse Reality keys."
+        echo "[DEBUG] x25519 output was:"
+        echo "$REALITY_KEYS"
     fi
 else
     echo "[WARN] xray x25519 failed."
