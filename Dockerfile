@@ -107,17 +107,15 @@ RUN curl -fsSL --output /usr/local/bin/cloudflared \
     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" && \
     chmod +x /usr/local/bin/cloudflared
 
-# ===== FIX 2: PufferPanel from GitHub releases instead of apt =====
+# ===== FIX 2: PufferPanel from .deb release =====
 RUN PUFFER_VERSION=$(curl -s https://api.github.com/repos/PufferPanel/PufferPanel/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/') && \
     echo "[*] Installing PufferPanel ${PUFFER_VERSION}..." && \
-    curl -fsSL -o /tmp/pufferpanel.tar.gz \
-    "https://github.com/PufferPanel/PufferPanel/releases/download/${PUFFER_VERSION}/pufferpanel_linux_amd64.tar.gz" && \
-    mkdir -p /tmp/pufferpanel && tar -xzf /tmp/pufferpanel.tar.gz -C /tmp/pufferpanel && \
-    mv /tmp/pufferpanel/pufferpanel /usr/local/bin/pufferpanel && \
-    chmod +x /usr/local/bin/pufferpanel && \
+    curl -fsSL -o /tmp/pufferpanel.deb \
+    "https://github.com/pufferpanel/pufferpanel/releases/download/${PUFFER_VERSION}/pufferpanel_${PUFFER_VERSION#v}_amd64.deb" && \
+    dpkg -i /tmp/pufferpanel.deb || apt-get install -f -y --no-install-recommends && \
     mkdir -p /var/lib/pufferpanel/email /var/lib/pufferpanel/servers /etc/pufferpanel /var/log/pufferpanel /var/www/pufferpanel && \
     echo '{}' > /var/lib/pufferpanel/email/emails.json && \
-    rm -rf /tmp/pufferpanel.tar.gz /tmp/pufferpanel
+    rm -f /tmp/pufferpanel.deb
 
 RUN cat > /etc/pufferpanel/config.json << 'PPEOF'
 {
@@ -610,7 +608,7 @@ autorestart=true
 priority=30
 
 [program:pufferpanel]
-command=/usr/local/bin/pufferpanel run
+command=/usr/bin/pufferpanel run
 autostart=true
 autorestart=true
 priority=40
@@ -695,7 +693,6 @@ if /usr/local/bin/xray -test -config /etc/xray/config.json 2>/dev/null; then
 else
     echo "[WARN] Xray config validation failed. Reality keys may be missing."
     echo "[*] Disabling Reality inbound to allow Xray to start..."
-    # Remove the reality inbound to prevent crash
     python3 -c "
 import json
 with open('/etc/xray/config.json', 'r') as f:
