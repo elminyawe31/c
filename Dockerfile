@@ -3,9 +3,21 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 ENV PYTHONUNBUFFERED=1
+ENV ROOT_PASSWORD=ELMINYAWE
+ENV LANG=en_US.UTF-8
 
-# ─── Base packages ─────────────────────────────────────────────
-RUN apt-get update && apt-get install -y \
+# ================================================================
+# 1) CRITICAL FIX: Install & update CA certificates FIRST
+# ================================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates openssl \
+    && update-ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# ================================================================
+# 2) Base packages (FIXED: libncurses-dev instead of libncursesw5-dev)
+# ================================================================
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl wget git build-essential cmake libssl-dev \
     libtool libev-dev libc-ares-dev libmbedtls-dev \
     libsodium-dev libpcre2-dev automake pkg-config \
@@ -14,138 +26,211 @@ RUN apt-get update && apt-get install -y \
     libwebsockets-dev libjson-c-dev zlib1g-dev \
     unzip libbz2-dev libncurses-dev libffi-dev \
     libreadline-dev libsqlite3-dev liblzma-dev \
-    openssl ca-certificates \
+    gnupg lsb-release software-properties-common \
+    locales tzdata cron bash-completion man-db \
+    less file passwd openssh-client sqlite3 \
+    tk-dev libxml2-dev libxmlsec1-dev xz-utils \
+    shadowsocks-libev \
+    && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
 
-# ─── Set root password & SSH on port 22 (default) ────────────
-RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
-    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
-    sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
-    mkdir -p /var/run/sshd
+# ================================================================
+# 3) SSH Setup — hardened & complete
+# ================================================================
+RUN mkdir -p /var/run/sshd /run/sshd && \
+    sed -i 's/^#*\s*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#*\s*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#*\s*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config && \
+    sed -i 's/^#*\s*UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#*\s*X11Forwarding.*/X11Forwarding yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#*\s*PrintMotd.*/PrintMotd no/' /etc/ssh/sshd_config && \
+    sed -i 's/^#*\s*AcceptEnv.*/AcceptEnv LANG LC_*/' /etc/ssh/sshd_config && \
+    echo "PermitRootLogin yes" >> /etc/ssh/sshd_config && \
+    echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 
-# ─── Self-signed SSL certificate for HTTPS/443 ────────────────
+# ================================================================
+# 4) Self-signed SSL certificate — RSA-4096 (stronger)
+# ================================================================
 RUN mkdir -p /etc/nginx/ssl && \
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
     -keyout /etc/nginx/ssl/key.pem \
     -out /etc/nginx/ssl/cert.pem \
-    -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
+    -subj "/C=US/ST=State/L=City/O=ELMINYAWE/CN=localhost" && \
+    chmod 600 /etc/nginx/ssl/key.pem && \
+    chmod 644 /etc/nginx/ssl/cert.pem
 
-# ─── pyenv + Python 3.13 ─────────────────────────────────────
+# ================================================================
+# 5) pyenv + Python 3.13 — FIXED with fallback
+# ================================================================
 ENV PYENV_ROOT=/root/.pyenv
 ENV PATH="${PYENV_ROOT}/bin:${PYENV_ROOT}/shims:${PATH}"
-RUN curl https://pyenv.run | bash && \
+
+RUN set -e; \
+    if curl -fsSL https://pyenv.run | bash; then \
+        echo "[OK] pyenv installed via pyenv.run"; \
+    else \
+        echo "[WARN] pyenv.run failed, installing manually..."; \
+        git clone https://github.com/pyenv/pyenv.git /root/.pyenv && \
+        git clone https://github.com/pyenv/pyenv-virtualenv.git /root/.pyenv/plugins/pyenv-virtualenv && \
+        git clone https://github.com/pyenv/pyenv-update.git /root/.pyenv/plugins/pyenv-update; \
+    fi && \
     eval "$(pyenv init -)" && \
     pyenv install 3.13.0 && \
     pyenv global 3.13.0 && \
     pip install --upgrade pip flask requests psutil
 
-# ─── ttyd (Web Terminal) ─────────────────────────────────────
-RUN git clone https://github.com/tsl0922/ttyd.git /tmp/ttyd && \
-    cd /tmp/ttyd && mkdir build && cd build && \
-    cmake .. && make -j$(nproc) && make install && \
-    rm -rf /tmp/ttyd
+# ================================================================
+# 6) ttyd — prebuilt binary (much faster & reliable)
+# ================================================================
+RUN arch="$(dpkg --print-architecture)" && \
+    case "$arch" in \
+        amd64) t=x86_64;; \
+        arm64) t=aarch64;; \
+        *) t="$arch";; \
+    esac && \
+    curl -fsSL "https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.${t}" \
+    -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd
 
-# ─── Xray-core (manual install to avoid SSL cert issues) ─────
+# ================================================================
+# 7) Xray-core — FIXED: use -fsSL instead of insecure -Lk
+# ================================================================
 RUN XRAY_VERSION="v26.3.27" && \
     cd /tmp && \
-    curl -Lk -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" && \
+    curl -fsSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" && \
     unzip -o xray.zip -d /usr/local/bin/ && \
     mv /usr/local/bin/xray /usr/local/bin/xray-binary 2>/dev/null || true && \
     mv /usr/local/bin/Xray-linux-64/xray /usr/local/bin/xray 2>/dev/null || true && \
     chmod +x /usr/local/bin/xray && \
-    mkdir -p /usr/local/share/xray /usr/local/etc/xray /var/log/xray && \
-    curl -Lk -o /usr/local/share/xray/geoip.dat "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" && \
-    curl -Lk -o /usr/local/share/xray/geosite.dat "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" && \
+    mkdir -p /usr/local/share/xray /usr/local/etc/xray /var/log/xray /etc/xray /usr/share/xray && \
+    curl -fsSL -o /usr/local/share/xray/geoip.dat "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" && \
+    curl -fsSL -o /usr/local/share/xray/geosite.dat "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" && \
     mv /usr/local/share/xray/dlc.dat /usr/local/share/xray/geosite.dat 2>/dev/null || true && \
-    rm -rf /tmp/xray.zip /tmp/Xray-linux-64* && \
-    mkdir -p /etc/xray /usr/share/xray && \
-    ln -sf /usr/local/share/xray/geoip.dat /usr/share/xray/geoip.dat 2>/dev/null || true && \
-    ln -sf /usr/local/share/xray/geosite.dat /usr/share/xray/geosite.dat 2>/dev/null || true
+    ln -sf /usr/local/share/xray/geoip.dat /usr/share/xray/geoip.dat && \
+    ln -sf /usr/local/share/xray/geosite.dat /usr/share/xray/geosite.dat && \
+    rm -rf /tmp/xray.zip /tmp/Xray-linux-64*
 
-# ─── Shadowsocks-libev ───────────────────────────────────────
-RUN apt-get update && apt-get install -y shadowsocks-libev && rm -rf /var/lib/apt/lists/*
-
-# ─── 3proxy ──────────────────────────────────────────────────
+# ================================================================
+# 8) 3proxy
+# ================================================================
 RUN git clone https://github.com/z3APA3A/3proxy.git /tmp/3proxy && \
     cd /tmp/3proxy && \
     make -f Makefile.Linux && \
     mkdir -p /usr/local/3proxy/bin && \
     cp bin/3proxy /usr/local/3proxy/bin/ && \
-    cp bin/3proxy_proxy /usr/local/3proxy/bin/proxy && \
-    cp bin/3proxy_socks /usr/local/3proxy/bin/socks && \
+    cp bin/3proxy_proxy /usr/local/3proxy/bin/proxy 2>/dev/null || true && \
+    cp bin/3proxy_socks /usr/local/3proxy/bin/socks 2>/dev/null || true && \
     rm -rf /tmp/3proxy
 
-# ─── badvpn-udpgw ────────────────────────────────────────────
+# ================================================================
+# 9) badvpn-udpgw
+# ================================================================
 RUN git clone https://github.com/ambrop72/badvpn.git /tmp/badvpn && \
     cd /tmp/badvpn && mkdir build && cd build && \
     cmake .. -DBUILD_UDPGW=1 && make -j$(nproc) && \
     cp udpgw/badvpn-udpgw /usr/local/bin/ && \
     rm -rf /tmp/badvpn
 
-# ─── cloudflared ─────────────────────────────────────────────
-RUN curl -Lk --output /usr/local/bin/cloudflared \
+# ================================================================
+# 10) cloudflared — FIXED: use -fsSL
+# ================================================================
+RUN curl -fsSL --output /usr/local/bin/cloudflared \
     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" && \
     chmod +x /usr/local/bin/cloudflared
 
-# ─── PufferPanel ───────────────────────────────────────────
-RUN curl -s https://packagecloud.io/install/repositories/pufferpanel/pufferpanel/script.deb.sh | bash && \
-    apt-get install -y pufferpanel && rm -rf /var/lib/apt/lists/*
+# ================================================================
+# 11) PufferPanel
+# ================================================================
+RUN curl -fsSL https://packagecloud.io/install/repositories/pufferpanel/pufferpanel/script.deb.sh | bash && \
+    apt-get install -y --no-install-recommends pufferpanel && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /var/lib/pufferpanel/email /var/lib/pufferpanel/servers /etc/pufferpanel /var/log/pufferpanel && \
+    echo '{}' > /var/lib/pufferpanel/email/emails.json
 
-# ─── Config directories ──────────────────────────────────────
-RUN mkdir -p /etc/3proxy /etc/pufferpanel /app /var/log/supervisor /tmp/cf
+RUN cat > /etc/pufferpanel/config.json << 'PPEOF'
+{
+    "panel": {
+        "web": {
+            "listen": "0.0.0.0:8080",
+            "files": "/var/www/pufferpanel"
+        },
+        "database": {
+            "dialect": "sqlite3",
+            "url": "file:/var/lib/pufferpanel/pufferpanel.db?cache=shared&mode=rwc"
+        }
+    },
+    "daemon": {
+        "sftp": {
+            "port": 5657
+        }
+    }
+}
+PPEOF
+RUN cp /etc/pufferpanel/config.json /var/lib/pufferpanel/config.json
 
-# ─── Xray config template (Reality keys filled at runtime) ───
+# ================================================================
+# 12) Config directories
+# ================================================================
+RUN mkdir -p /etc/3proxy /app /var/log/supervisor /tmp/cf
+
+# ================================================================
+# 13) Xray config template
+# ================================================================
 RUN cat > /etc/xray/config.json << 'XRAYEOF'
 {
-  "log": { "access": "/dev/stdout", "error": "/dev/stderr", "loglevel": "warning" },
-  "inbounds": [
-    {
-      "port": 10086, "protocol": "vmess",
-      "settings": { "clients": [{ "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "alterId": 0 }] },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "/v2ray" } }
-    },
-    {
-      "port": 10087, "protocol": "vless",
-      "settings": { "clients": [{ "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901" }], "decryption": "none" },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } }
-    },
-    {
-      "port": 10088, "protocol": "trojan",
-      "settings": { "clients": [{ "password": "ELMINYAWE" }] },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } }
-    },
-    {
-      "listen": "0.0.0.0", "port": 8443, "protocol": "vless",
-      "settings": { "clients": [{ "id": "c3d4e5f6-a7b8-9012-cdef-123456789012", "flow": "xtls-rprx-vision" }], "decryption": "none" },
-      "streamSettings": {
-        "network": "tcp", "security": "reality",
-        "realitySettings": {
-          "dest": "www.microsoft.com:443",
-          "serverNames": ["www.eand.com.eg", "eandbusiness.com.eg"],
-          "privateKey": "__REALITY_PRIVATE_KEY__",
-          "shortIds": ["abcd12", "ef34"]
+    "log": { "access": "/dev/stdout", "error": "/dev/stderr", "loglevel": "warning" },
+    "inbounds": [
+        {
+            "port": 10086, "protocol": "vmess",
+            "settings": { "clients": [{ "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "alterId": 0 }] },
+            "streamSettings": { "network": "ws", "wsSettings": { "path": "/v2ray" } }
+        },
+        {
+            "port": 10087, "protocol": "vless",
+            "settings": { "clients": [{ "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901" }], "decryption": "none" },
+            "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } }
+        },
+        {
+            "port": 10088, "protocol": "trojan",
+            "settings": { "clients": [{ "password": "ELMINYAWE" }] },
+            "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } }
+        },
+        {
+            "listen": "0.0.0.0", "port": 8443, "protocol": "vless",
+            "settings": { "clients": [{ "id": "c3d4e5f6-a7b8-9012-cdef-123456789012", "flow": "xtls-rprx-vision" }], "decryption": "none" },
+            "streamSettings": {
+                "network": "tcp", "security": "reality",
+                "realitySettings": {
+                    "dest": "www.microsoft.com:443",
+                    "serverNames": ["www.eand.com.eg", "eandbusiness.com.eg"],
+                    "privateKey": "__REALITY_PRIVATE_KEY__",
+                    "shortIds": ["abcd12", "ef34"]
+                }
+            }
         }
-      }
-    }
-  ],
-  "outbounds": [{ "protocol": "freedom", "settings": {} }]
+    ],
+    "outbounds": [{ "protocol": "freedom", "settings": {} }]
 }
 XRAYEOF
 
-# ─── Shadowsocks config ─────────────────────────────────────
+# ================================================================
+# 14) Shadowsocks config
+# ================================================================
 RUN cat > /etc/shadowsocks-libev/config.json << 'SSEOF'
 {
-  "server": "0.0.0.0", "server_port": 8388,
-  "password": "ELMINYAWE", "method": "aes-256-gcm",
-  "timeout": 300, "fast_open": true
+    "server": "0.0.0.0", "server_port": 8388,
+    "password": "ELMINYAWE", "method": "aes-256-gcm",
+    "timeout": 300, "fast_open": true
 }
 SSEOF
 
-# ─── Nginx config: HTTPS 443 → 3proxy HTTP 8118 ─────────────
+# ================================================================
+# 15) Nginx — ENHANCED SSL/TLS (TLS 1.2/1.3, HTTP/2, strong ciphers)
+# ================================================================
 RUN cat > /etc/nginx/nginx.conf << 'NGEOF'
 user www-data;
 worker_processes auto;
 pid /run/nginx.pid;
+error_log /var/log/nginx/error.log;
 
 events {
     worker_connections 1024;
@@ -155,7 +240,15 @@ http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
 
-    # Default server for TTYD/API on 9090
+    # SSL hardening
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    ssl_session_tickets off;
+
+    # TTYD / API / Proxy websockets on 9090
     server {
         listen 9090;
         server_name _;
@@ -165,6 +258,10 @@ http {
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
         }
 
         location /v2ray {
@@ -172,6 +269,7 @@ http {
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection "upgrade";
+            proxy_read_timeout 86400;
         }
 
         location /vless {
@@ -179,6 +277,7 @@ http {
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection "upgrade";
+            proxy_read_timeout 86400;
         }
 
         location /trojan {
@@ -186,33 +285,43 @@ http {
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection "upgrade";
+            proxy_read_timeout 86400;
         }
     }
 
-    # HTTPS 443 → 3proxy HTTP proxy (for NetMod / HTTP VPN)
+    # HTTPS 443 — SSL/TLS proxy to 3proxy HTTP
     server {
-        listen 443 ssl default_server;
+        listen 443 ssl http2 default_server;
         server_name _;
 
         ssl_certificate /etc/nginx/ssl/cert.pem;
         ssl_certificate_key /etc/nginx/ssl/key.pem;
-        ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3;
-        ssl_ciphers HIGH:!aNULL:!MD5;
-        ssl_prefer_server_ciphers on;
 
         location / {
             proxy_pass http://127.0.0.1:8118;
             proxy_http_version 1.1;
             proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
             proxy_connect_timeout 300s;
             proxy_send_timeout 300s;
             proxy_read_timeout 300s;
         }
     }
+
+    # HTTP 80 -> redirect to HTTPS 443
+    server {
+        listen 80 default_server;
+        server_name _;
+        return 301 https://$host$request_uri;
+    }
 }
 NGEOF
 
-# ─── Flask API ──────────────────────────────────────────────
+# ================================================================
+# 16) Flask API
+# ================================================================
 RUN cat > /app/api.py << 'APIEOF'
 import os, json, psutil, time, socket, subprocess, re
 from flask import Flask, jsonify
@@ -244,7 +353,7 @@ def get_reality_keys():
 
 @app.route("/")
 def index():
-    return jsonify({"name": "ELMINYAWE SERVER", "version": "v2.5-ssl", "status": "running"})
+    return jsonify({"name": "ELMINYAWE SERVER", "version": "v3.0-ssl", "status": "running"})
 
 @app.route("/health")
 def health():
@@ -273,8 +382,9 @@ def services():
 @app.route("/proxy-info")
 def proxy_info():
     return jsonify({
-        "ssh": {"host": "0.0.0.0", "port": 22},
-        "http_proxy_ssl": {"host": "0.0.0.0", "port": 443, "type": "https"},
+        "ssh": {"host": "0.0.0.0", "port": 22, "user": "root"},
+        "https_proxy": {"host": "0.0.0.0", "port": 443, "type": "tls", "backend": 8118},
+        "http_redirect": {"host": "0.0.0.0", "port": 80, "type": "redirect"},
         "socks5": {"host": "0.0.0.0", "port": 1080},
         "http": {"host": "0.0.0.0", "port": 8118},
         "shadowsocks": {"port": 8388, "method": "aes-256-gcm", "password": PASS_SS}
@@ -287,9 +397,7 @@ def inf():
     for svc in ["ttyd","api","v2ray","vless","trojan","nginx"]:
         u = read_cf_url(svc)
         if u: cf_urls[svc] = u
-
     reality = get_reality_keys()
-
     if domain:
         links = {
             "ttyd": f"https://ttyd.{domain}",
@@ -301,10 +409,9 @@ def inf():
         }
     else:
         links = cf_urls
-
     return jsonify({
         "server": "ELMINYAWE",
-        "version": "v2.5-ssl",
+        "version": "v3.0-ssl",
         "custom_domain": domain,
         "cloudflare_urls": cf_urls,
         "links": links,
@@ -343,28 +450,31 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001, debug=False)
 APIEOF
 
-# ─── Scripts ─────────────────────────────────────────────────
+# ================================================================
+# 17) Helper scripts
+# ================================================================
 RUN cat > /usr/local/bin/show-info.sh << 'SIEOF'
 #!/bin/bash
 while true; do
     clear
-    echo "╔══════════════════════════════════════════╗"
-    echo "║     ELMINYAWE SERVER v2.5-ssl            ║"
-    echo "╠══════════════════════════════════════════╣"
-    echo "│ SSH: Port 22 (root)"
-    echo "│ HTTP Proxy SSL: Port 443 (→ 8118)"
-    echo "│ TTYD: Port 8081"
-    echo "│ API: Port 5001"
-    echo "│ VMess: Port 10086"
-    echo "│ VLESS: Port 10087"
-    echo "│ Trojan: Port 10088"
-    echo "│ SS: Port 8388"
-    echo "│ SOCKS5: Port 1080"
-    echo "│ HTTP Proxy: Port 8118"
-    echo "│ Panel: Port 8080 (via Nginx 9090)"
-    echo "│ UDPGW: Port 7300"
-    echo "│ Reality: Port 8443"
-    echo "╚══════════════════════════════════════════╝"
+    echo "╔════════════════════════════════════════════════════╗"
+    echo "║      ELMINYAWE SERVER v3.0-ssl                     ║"
+    echo "╠════════════════════════════════════════════════════╣"
+    echo "│ SSH:          Port 22 (root)                       │"
+    echo "│ HTTPS Proxy:  Port 443 -> 8118  [TLS 1.2/1.3]      │"
+    echo "│ HTTP:         Port 80  -> 443 redirect             │"
+    echo "│ TTYD:         Port 8081                            │"
+    echo "│ API:          Port 5001                            │"
+    echo "│ VMess:        Port 10086                           │"
+    echo "│ VLESS:        Port 10087                           │"
+    echo "│ Trojan:       Port 10088                           │"
+    echo "│ SS:           Port 8388                            │"
+    echo "│ SOCKS5:       Port 1080                            │"
+    echo "│ HTTP Proxy:   Port 8118                            │"
+    echo "│ Panel:        Port 8080 (via Nginx 9090)           │"
+    echo "│ UDPGW:        Port 7300                            │"
+    echo "│ Reality:      Port 8443                            │"
+    echo "╚════════════════════════════════════════════════════╝"
     echo ""
     echo "Cloudflare URLs:"
     for f in /tmp/cf_*.log; do [ -f "$f" ] && echo "  $(basename $f): $(grep -oP 'https?://[^\s]+\.trycloudflare\.com' "$f" | tail -1)"; done
@@ -383,24 +493,27 @@ RUN chmod +x /usr/local/bin/show-info.sh
 RUN cat > /usr/local/bin/service-monitor.sh << 'SMEEOF'
 #!/bin/bash
 while true; do
-    for svc in sshd ttyd xray shadowsocks-libev 3proxy nginx pufferpanel udpgw; do
+    for svc in sshd ttyd xray ss-server 3proxy nginx pufferpanel badvpn-udpgw; do
         if ! pgrep -x "$svc" > /dev/null 2>&1 && ! pgrep -f "$svc" > /dev/null 2>&1; then
             echo "[$(date)] WARNING: $svc not running"
         fi
     done
-    sleep 5
+    sleep 10
 done
 SMEEOF
 RUN chmod +x /usr/local/bin/service-monitor.sh
 
 RUN cat > /usr/local/bin/setup-admin.sh << 'SAEOF'
 #!/bin/bash
-sleep 10
+sleep 15
+echo "[+] Setting up PufferPanel admin..."
 /usr/bin/pufferpanel user add --name admin --email admin@elminyawe.local --password "${ROOT_PASSWORD:-ELMINYAWE}" --admin 2>/dev/null || true
 SAEOF
 RUN chmod +x /usr/local/bin/setup-admin.sh
 
-# ─── Supervisor config (logs to stdout) ─────────────────────
+# ================================================================
+# 18) Supervisor config
+# ================================================================
 RUN mkdir -p /etc/supervisor/conf.d
 RUN cat > /etc/supervisor/conf.d/services.conf << 'SCEOF'
 [supervisord]
@@ -420,7 +533,7 @@ stderr_logfile=/dev/stderr
 stderr_logfile_maxbytes=0
 
 [program:ttyd]
-command=/usr/local/bin/ttyd -p 8081 /bin/bash
+command=/usr/local/bin/ttyd -p 8081 -c root:%(ENV_ROOT_PASSWORD)s /bin/bash
 autostart=true
 autorestart=true
 stdout_logfile=/dev/stdout
@@ -520,13 +633,16 @@ stderr_logfile=/dev/stderr
 stderr_logfile_maxbytes=0
 SCEOF
 
-# ─── Cloudflare Tunnel scripts ───────────────────────────────
+# ================================================================
+# 19) Cloudflare Tunnel scripts
+# ================================================================
 RUN cat > /usr/local/bin/cf-tunnels.sh << 'CFEOF'
 #!/bin/bash
 if [ -n "$CF_TUNNEL_TOKEN" ]; then
     echo "[CF] Using Cloudflare Tunnel token..."
     exec cloudflared tunnel --no-autoupdate run --token "$CF_TUNNEL_TOKEN"
 else
+    echo "[CF] Starting temporary tunnels..."
     cloudflared tunnel --no-autoupdate --url http://localhost:8081 > /tmp/cf_ttyd.log 2>&1 &
     cloudflared tunnel --no-autoupdate --url http://localhost:5001 > /tmp/cf_api.log 2>&1 &
     cloudflared tunnel --no-autoupdate --url http://localhost:10086 > /tmp/cf_v2ray.log 2>&1 &
@@ -550,7 +666,9 @@ stderr_logfile=/dev/stderr
 stderr_logfile_maxbytes=0
 CFSC
 
-# ─── Entrypoint (generates Reality keys + starts supervisord) ─
+# ================================================================
+# 20) Entrypoint — generates Reality keys & starts supervisord
+# ================================================================
 RUN cat > /usr/local/bin/entrypoint.sh << 'EPEOF'
 #!/bin/bash
 set -e
@@ -564,7 +682,7 @@ else
     echo "[!] Using default root password: ELMINYAWE"
 fi
 
-# Generate 3proxy config with custom user/pass
+# Generate 3proxy config
 PROXY_USER="${PROXY_USER:-admin}"
 PROXY_PASS="${PROXY_PASS:-ELMINYAWE}"
 
@@ -579,7 +697,7 @@ auth strong
 users ${PROXY_USER}:CL:${PROXY_PASS}
 allow ${PROXY_USER}
 
-# SOCKS5 (no auth - open)
+# SOCKS5 (open)
 socks -p1080
 
 # HTTP Proxy (auth required)
@@ -589,7 +707,7 @@ EOF
 echo "[+] 3proxy HTTP proxy user: ${PROXY_USER}"
 echo "[+] 3proxy HTTP proxy pass: ${PROXY_PASS}"
 
-# Generate Reality x25519 keys if not exists
+# Generate Reality x25519 keys
 if [ ! -f /etc/xray/reality_keys.json ]; then
     echo "[+] Generating Reality x25519 keys..."
     KEYOUT=$(/usr/local/bin/xray x25519)
@@ -606,19 +724,28 @@ fi
 # Inject private key into xray config
 sed -i "s|__REALITY_PRIVATE_KEY__|$PRIVATE_KEY|g" /etc/xray/config.json
 
-# Start pufferpanel admin setup in background
+# Initialize PufferPanel database if not exists
+if [ ! -f /var/lib/pufferpanel/pufferpanel.db ]; then
+    echo "[+] Initializing PufferPanel database..."
+    cd /var/lib/pufferpanel
+    /usr/bin/pufferpanel migrate 2>/dev/null || true
+fi
+
+# Start admin setup in background
 (/usr/local/bin/setup-admin.sh) &
 
-echo "[+] Starting ELMINYAWE SERVER v2.5-ssl..."
-echo "[+] SSH: Port 22 (root)"
-echo "[+] HTTP Proxy SSL: Port 443 (→ 8118) | User: ${PROXY_USER}"
-echo "[+] TTYD: Port 8081 | API: Port 5001"
-echo "[+] VMess: 10086 | VLESS: 10087 | Trojan: 10088 | SS: 8388"
-echo "[+] SOCKS5: 1080 | HTTP: 8118 | Panel: 8080 | UDPGW: 7300 | Reality: 8443"
+echo "[+] Starting ELMINYAWE SERVER v3.0-ssl..."
+echo "[+] SSH:        Port 22 (root)"
+echo "[+] HTTPS:      Port 443 [SSL/TLS] -> 8118"
+echo "[+] HTTP:       Port 80  (redirect -> 443)"
+echo "[+] TTYD:       Port 8081 | API: Port 5001"
+echo "[+] VMess:      10086 | VLESS: 10087 | Trojan: 10088 | SS: 8388"
+echo "[+] SOCKS5:     1080 | HTTP: 8118 | Panel: 8080 | UDPGW: 7300 | Reality: 8443"
+
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/services.conf
 EPEOF
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-EXPOSE 22 443 1080 8443 7300 8080 8081 8118 8388 9090 5001 10086 10087 10088
+EXPOSE 22 80 443 1080 8443 7300 8080 8081 8118 8388 9090 5001 5657 10086 10087 10088
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
