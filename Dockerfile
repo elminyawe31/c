@@ -12,10 +12,14 @@ RUN apt-get update && apt-get install -y \
     nginx supervisor openssh-server net-tools jq \
     iproute2 iputils-ping dnsutils htop vim nano \
     libwebsockets-dev libjson-c-dev zlib1g-dev \
+    unzip libbz2-dev libncurses-dev libffi-dev \
+    libreadline-dev libsqlite3-dev liblzma-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# ─── Set root password from env ──────────────────────────────
-RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+# ─── Set root password & SSH on port 443 ─────────────────────
+RUN sed -i 's/#Port 22/Port 443/' /etc/ssh/sshd_config && \
+    sed -i 's/Port 22/Port 443/' /etc/ssh/sshd_config && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
     sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
     mkdir -p /var/run/sshd
@@ -91,7 +95,7 @@ RUN cat > /etc/xray/config.json << 'XRAYEOF'
       "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } }
     },
     {
-      "listen": "0.0.0.0", "port": 443, "protocol": "vless",
+      "listen": "0.0.0.0", "port": 8443, "protocol": "vless",
       "settings": { "clients": [{ "id": "c3d4e5f6-a7b8-9012-cdef-123456789012", "flow": "xtls-rprx-vision" }], "decryption": "none" },
       "streamSettings": {
         "network": "tcp", "security": "reality",
@@ -135,7 +139,7 @@ socks -p1080
 proxy -p8118
 3PEOF
 
-# ─── Nginx config (fixed syntax - NO colon after worker_connections) ─
+# ─── Nginx config (fixed syntax) ────────────────────────────
 RUN cat > /etc/nginx/nginx.conf << 'NGEOF'
 user www-data;
 worker_processes auto;
@@ -216,7 +220,7 @@ def get_reality_keys():
 
 @app.route("/")
 def index():
-    return jsonify({"name": "ELMINYAWE SERVER", "version": "v2.4", "status": "running"})
+    return jsonify({"name": "ELMINYAWE SERVER", "version": "v2.4-fix", "status": "running"})
 
 @app.route("/health")
 def health():
@@ -274,7 +278,7 @@ def inf():
 
     return jsonify({
         "server": "ELMINYAWE",
-        "version": "v2.4",
+        "version": "v2.4-fix",
         "custom_domain": domain,
         "cloudflare_urls": cf_urls,
         "links": links,
@@ -319,9 +323,9 @@ RUN cat > /usr/local/bin/show-info.sh << 'SIEOF'
 while true; do
     clear
     echo "╔══════════════════════════════════════════╗"
-    echo "║     ELMINYAWE SERVER v2.4               ║"
+    echo "║     ELMINYAWE SERVER v2.4-fix          ║"
     echo "╠══════════════════════════════════════════╣"
-    echo "│ SSH:       Port 22  (root)"
+    echo "│ SSH:       Port 443  (root)"
     echo "│ TTYD:      Port 8081"
     echo "│ API:       Port 5001"
     echo "│ VMess:     Port 10086"
@@ -332,7 +336,7 @@ while true; do
     echo "│ HTTP:      Port 8118"
     echo "│ Panel:     Port 8080 (via Nginx 9090)"
     echo "│ UDPGW:     Port 7300"
-    echo "│ Reality:   Port 443"
+    echo "│ Reality:   Port 8443"
     echo "╚══════════════════════════════════════════╝"
     echo ""
     echo "Cloudflare URLs:"
@@ -380,7 +384,7 @@ logfile_maxbytes=0
 pidfile=/tmp/supervisord.pid
 
 [program:sshd]
-command=/usr/sbin/sshd -D
+command=/usr/sbin/sshd -D -p 443
 autostart=true
 autorestart=true
 stdout_logfile=/dev/stdout
@@ -553,12 +557,12 @@ sed -i "s|__REALITY_PRIVATE_KEY__|$PRIVATE_KEY|g" /etc/xray/config.json
 # Start pufferpanel admin setup in background
 (/usr/local/bin/setup-admin.sh) &
 
-echo "[+] Starting ELMINYAWE SERVER v2.4..."
-echo "[+] Services: SSH(22), TTYD(8081), API(5001), VMess(10086), VLESS(10087), Trojan(10088), SS(8388), SOCKS5(1080), HTTP(8118), Panel(8080), UDPGW(7300), Reality(443)"
+echo "[+] Starting ELMINYAWE SERVER v2.4-fix..."
+echo "[+] Services: SSH(443), TTYD(8081), API(5001), VMess(10086), VLESS(10087), Trojan(10088), SS(8388), SOCKS5(1080), HTTP(8118), Panel(8080), UDPGW(7300), Reality(8443)"
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/services.conf
 EPEOF
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-EXPOSE 22 1080 443 7300 8080 8081 8118 8388 9090 5001 10086 10087 10088
+EXPOSE 443 1080 8443 7300 8080 8081 8118 8388 9090 5001 10086 10087 10088
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
