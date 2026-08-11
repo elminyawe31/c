@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
     libwebsockets-dev libjson-c-dev zlib1g-dev \
     unzip libbz2-dev libncurses-dev libffi-dev \
     libreadline-dev libsqlite3-dev liblzma-dev \
-    openssl \
+    openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # ─── Set root password & SSH on port 22 (default) ────────────
@@ -45,14 +45,27 @@ RUN git clone https://github.com/tsl0922/ttyd.git /tmp/ttyd && \
     cmake .. && make -j$(nproc) && make install && \
     rm -rf /tmp/ttyd
 
-# ─── Xray-core (latest, with Reality support) ──────────────
-RUN bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install && \
-    mkdir -p /etc/xray /usr/share/xray
+# ─── Xray-core (manual install to avoid SSL cert issues) ─────
+RUN XRAY_VERSION="v26.3.27" && \
+    cd /tmp && \
+    curl -Lk -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" && \
+    unzip -o xray.zip -d /usr/local/bin/ && \
+    mv /usr/local/bin/xray /usr/local/bin/xray-binary 2>/dev/null || true && \
+    mv /usr/local/bin/Xray-linux-64/xray /usr/local/bin/xray 2>/dev/null || true && \
+    chmod +x /usr/local/bin/xray && \
+    mkdir -p /usr/local/share/xray /usr/local/etc/xray /var/log/xray && \
+    curl -Lk -o /usr/local/share/xray/geoip.dat "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" && \
+    curl -Lk -o /usr/local/share/xray/geosite.dat "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" && \
+    mv /usr/local/share/xray/dlc.dat /usr/local/share/xray/geosite.dat 2>/dev/null || true && \
+    rm -rf /tmp/xray.zip /tmp/Xray-linux-64* && \
+    mkdir -p /etc/xray /usr/share/xray && \
+    ln -sf /usr/local/share/xray/geoip.dat /usr/share/xray/geoip.dat 2>/dev/null || true && \
+    ln -sf /usr/local/share/xray/geosite.dat /usr/share/xray/geosite.dat 2>/dev/null || true
 
 # ─── Shadowsocks-libev ───────────────────────────────────────
 RUN apt-get update && apt-get install -y shadowsocks-libev && rm -rf /var/lib/apt/lists/*
 
-# ─── 3proxy (FIXED: use 3proxy_proxy instead of proxy) ───────
+# ─── 3proxy ──────────────────────────────────────────────────
 RUN git clone https://github.com/z3APA3A/3proxy.git /tmp/3proxy && \
     cd /tmp/3proxy && \
     make -f Makefile.Linux && \
@@ -70,7 +83,7 @@ RUN git clone https://github.com/ambrop72/badvpn.git /tmp/badvpn && \
     rm -rf /tmp/badvpn
 
 # ─── cloudflared ─────────────────────────────────────────────
-RUN curl -L --output /usr/local/bin/cloudflared \
+RUN curl -Lk --output /usr/local/bin/cloudflared \
     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" && \
     chmod +x /usr/local/bin/cloudflared
 
@@ -183,7 +196,7 @@ http {
 
         ssl_certificate /etc/nginx/ssl/cert.pem;
         ssl_certificate_key /etc/nginx/ssl/key.pem;
-        ssl_protocols SSLv3 TLSv1 TLSv1.1 TLSv1.2 TLSv1.3;
+        ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3;
         ssl_ciphers HIGH:!aNULL:!MD5;
         ssl_prefer_server_ciphers on;
 
@@ -566,7 +579,7 @@ auth strong
 users ${PROXY_USER}:CL:${PROXY_PASS}
 allow ${PROXY_USER}
 
-# SOCKS5 (no auth)
+# SOCKS5 (no auth - open)
 socks -p1080
 
 # HTTP Proxy (auth required)
