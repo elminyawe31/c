@@ -4,7 +4,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 ENV PYTHONUNBUFFERED=1
 ENV LANG=en_US.UTF-8
-ENV TERM=xterm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates openssl \
@@ -73,7 +72,7 @@ RUN arch="$(dpkg --print-architecture)" && \
     curl -fsSL "https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.${t}" \
     -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd
 
-# ===== FIX 1: Xray installation (extract to tmp first) =====
+# ===== FIX: Xray installation (extract to tmp first) =====
 RUN XRAY_VERSION="v26.3.27" && \
     cd /tmp && \
     curl -fsSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" && \
@@ -108,15 +107,11 @@ RUN curl -fsSL --output /usr/local/bin/cloudflared \
     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" && \
     chmod +x /usr/local/bin/cloudflared
 
-# ===== FIX 2: PufferPanel - extract binary from .deb directly =====
-RUN curl -fsSL -o /tmp/pufferpanel.deb \
-    "https://github.com/pufferpanel/pufferpanel/releases/download/v3.0.9/pufferpanel_3.0.9_amd64.deb" && \
-    dpkg-deb -x /tmp/pufferpanel.deb /tmp/pufferpanel-extract && \
-    cp /tmp/pufferpanel-extract/usr/bin/pufferpanel /usr/local/bin/pufferpanel && \
-    chmod +x /usr/local/bin/pufferpanel && \
-    mkdir -p /var/lib/pufferpanel/email /var/lib/pufferpanel/servers /etc/pufferpanel /var/log/pufferpanel /var/www/pufferpanel && \
-    echo '{}' > /var/lib/pufferpanel/email/emails.json && \
-    rm -rf /tmp/pufferpanel.deb /tmp/pufferpanel-extract
+RUN curl -s https://packagecloud.io/install/repositories/pufferpanel/pufferpanel/script.deb.sh | os=ubuntu dist=noble bash && \
+    apt-get install -y pufferpanel && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /var/lib/pufferpanel/email /var/lib/pufferpanel/servers /etc/pufferpanel /var/log/pufferpanel && \
+    echo '{}' > /var/lib/pufferpanel/email/emails.json
 
 RUN cat > /etc/pufferpanel/config.json << 'PPEOF'
 {
@@ -141,17 +136,9 @@ RUN cp /etc/pufferpanel/config.json /var/lib/pufferpanel/config.json
 
 RUN mkdir -p /etc/3proxy /app /var/log/supervisor /tmp/cf
 
-# ===== FIX 3: Xray config with routing block + proper reality =====
 RUN cat > /etc/xray/config.json << 'XRAYEOF'
 {
     "log": { "access": "/dev/stdout", "error": "/dev/stderr", "loglevel": "warning" },
-    "routing": {
-        "domainStrategy": "IPIfNonMatch",
-        "rules": [
-            { "ip": ["geoip:private"], "outboundTag": "block", "type": "field" },
-            { "domain": ["geosite:category-ads-all"], "outboundTag": "block", "type": "field" }
-        ]
-    },
     "inbounds": [
         {
             "port": 10086, "protocol": "vmess",
@@ -177,16 +164,12 @@ RUN cat > /etc/xray/config.json << 'XRAYEOF'
                     "dest": "www.microsoft.com:443",
                     "serverNames": ["www.microsoft.com"],
                     "privateKey": "__REALITY_PRIVATE_KEY__",
-                    "shortIds": ["abcd12", "ef34"],
-                    "publicKey": "__REALITY_PUBLIC_KEY__"
+                    "shortIds": ["abcd12", "ef34"]
                 }
             }
         }
     ],
-    "outbounds": [
-        { "protocol": "freedom", "tag": "direct", "settings": {} },
-        { "protocol": "blackhole", "tag": "block", "settings": {} }
-    ]
+    "outbounds": [{ "protocol": "freedom", "settings": {} }]
 }
 XRAYEOF
 
@@ -319,7 +302,7 @@ def get_reality_keys():
 
 @app.route("/")
 def index():
-    return jsonify({"name": "ELMINYAWE SERVER", "version": "v3.2-fixed", "status": "running"})
+    return jsonify({"name": "ELMINYAWE SERVER", "version": "v3.1", "status": "running"})
 
 @app.route("/health")
 def health():
@@ -380,7 +363,7 @@ def inf():
         links = cf_urls
     return jsonify({
         "server": "ELMINYAWE",
-        "version": "v3.2-fixed",
+        "version": "v3.1",
         "custom_domain": domain,
         "cloudflare_urls": cf_urls,
         "links": links,
@@ -424,7 +407,7 @@ RUN cat > /usr/local/bin/show-info.sh << 'SIEOF'
 while true; do
     clear
     echo "=============================================="
-    echo "  ELMINYAWE SERVER v3.2-fixed"
+    echo "  ELMINYAWE SERVER v3.1"
     echo "=============================================="
     echo ""
     echo "[SSH] Port: 22"
@@ -520,7 +503,7 @@ start_tunnel() {
     local port=$2
     local logfile="${LOG_DIR}/cf_${name}.log"
     echo "[$(date)] Starting Cloudflare tunnel: $name -> localhost:$port"
-    nohup cloudflared tunnel --url "http://localhost:${port}" > "$logfile" 2>&1 &
+    nohup cloudflared tunnel run --url "http://localhost:${port}" > "$logfile" 2>&1 &
 }
 
 start_tunnel "ttyd" 8081
@@ -573,8 +556,6 @@ command=/usr/local/bin/xray -config /etc/xray/config.json
 autostart=true
 autorestart=true
 priority=30
-startsecs=3
-startretries=10
 
 [program:shadowsocks-libev]
 command=/usr/bin/ss-server -c /etc/shadowsocks-libev/config.json
@@ -607,13 +588,11 @@ autostart=true
 autorestart=true
 priority=30
 
-# ===== FIX 4: Use /usr/local/bin/pufferpanel (extracted from .deb) =====
 [program:pufferpanel]
-command=/usr/local/bin/pufferpanel run
+command=/usr/bin/pufferpanel run
 autostart=true
 autorestart=true
 priority=40
-startsecs=3
 
 [program:flask-api]
 command=python3 /app/api.py
@@ -624,7 +603,6 @@ directory=/app
 
 [program:show-info]
 command=/usr/local/bin/show-info.sh
-autostart=true
 autostart=true
 autorestart=true
 priority=60
@@ -655,7 +633,7 @@ RUN cat > /usr/local/bin/entrypoint.sh << 'EPEOF'
 set -e
 
 echo "=========================================="
-echo "  ELMINYAWE SERVER v3.2-fixed"
+echo "  ELMINYAWE SERVER v3.1"
 echo "  Starting initialization..."
 echo "=========================================="
 
@@ -672,47 +650,30 @@ echo "root:$ROOT_PASSWORD" | chpasswd
 echo "[*] Generating Xray Reality keys..."
 REALITY_KEYS=$(/usr/local/bin/xray x25519 2>/dev/null || echo "")
 if [ -n "$REALITY_KEYS" ]; then
-    PRIVATE_KEY=$(echo "$REALITY_KEYS" | grep -i "private" | awk '{print $NF}')
-    PUBLIC_KEY=$(echo "$REALITY_KEYS" | grep -iE "public|password.*public" | awk '{print $NF}')
+    PRIVATE_KEY=$(echo "$REALITY_KEYS" | grep "Private key:" | awk '{print $3}')
+    PUBLIC_KEY=$(echo "$REALITY_KEYS" | grep "Public key:" | awk '{print $3}')
     if [ -n "$PRIVATE_KEY" ] && [ -n "$PUBLIC_KEY" ]; then
         echo "{\"private_key\":\"$PRIVATE_KEY\",\"public_key\":\"$PUBLIC_KEY\"}" > /etc/xray/reality_keys.json
         echo "[OK] Reality keys generated."
-        sed -i "s#__REALITY_PRIVATE_KEY__#$PRIVATE_KEY#g" /etc/xray/config.json
-        sed -i "s#__REALITY_PUBLIC_KEY__#$PUBLIC_KEY#g" /etc/xray/config.json
-        echo "[OK] Injected Reality keys into Xray config."
+        sed -i "s|__REALITY_PRIVATE_KEY__|$PRIVATE_KEY|g" /etc/xray/config.json
+        echo "[OK] Injected Reality private key into Xray config."
     else
         echo "[WARN] Could not parse Reality keys."
-        echo "[DEBUG] x25519 output was:"
-        echo "$REALITY_KEYS"
     fi
 else
     echo "[WARN] xray x25519 failed."
 fi
 
-# Validate xray config before starting supervisor
-echo "[*] Validating Xray config..."
-if /usr/local/bin/xray -test -config /etc/xray/config.json 2>/dev/null; then
-    echo "[OK] Xray config is valid."
-else
-    echo "[WARN] Xray config validation failed. Reality keys may be missing."
-    echo "[*] Disabling Reality inbound to allow Xray to start..."
-    python3 -c "
-import json
-with open('/etc/xray/config.json', 'r') as f:
-    cfg = json.load(f)
-cfg['inbounds'] = [i for i in cfg['inbounds'] if i.get('port') != 8443]
-with open('/etc/xray/config.json', 'w') as f:
-    json.dump(cfg, f, indent=2)
-"
-    echo "[OK] Reality inbound removed. Xray will start without Reality."
-fi
-
 echo "[*] Setting up 3proxy config..."
 cat > /etc/3proxy/3proxy.cfg << EOF
+daemon
+
 log /var/log/3proxy.log D
 rotate 30
+
 proxy -p8118 -n -a
 socks -p1080 -n -a
+
 allow *
 EOF
 
@@ -725,3 +686,4 @@ EXPOSE 22 80 443 1080 8080 8081 8118 8388 8443 9090 5001 5657 10086 10087 10088
 
 WORKDIR /app
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
