@@ -28,13 +28,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /var/run/sshd /run/sshd && \
-    sed -i 's/^#*\s*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
-    sed -i 's/^#*\s*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
-    sed -i 's/^#*\s*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config && \
-    sed -i 's/^#*\s*UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config && \
-    sed -i 's/^#*\s*X11Forwarding.*/X11Forwarding yes/' /etc/ssh/sshd_config && \
-    sed -i 's/^#*\s*PrintMotd.*/PrintMotd no/' /etc/ssh/sshd_config && \
-    sed -i 's/^#*\s*AcceptEnv.*/AcceptEnv LANG LC_*/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\s*\(PermitRootLogin\).*/\1 yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\s*\(PasswordAuthentication\).*/\1 yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\s*\(ChallengeResponseAuthentication\).*/\1 no/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\s*\(UsePAM\).*/\1 yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\s*\(X11Forwarding\).*/\1 yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\s*\(PrintMotd\).*/\1 no/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\s*\(AcceptEnv\).*/\1 LANG LC_*/' /etc/ssh/sshd_config && \
     echo "PermitRootLogin yes" >> /etc/ssh/sshd_config && \
     echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 
@@ -72,12 +72,13 @@ RUN arch="$(dpkg --print-architecture)" && \
     curl -fsSL "https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.${t}" \
     -o /usr/local/bin/ttyd && chmod +x /usr/local/bin/ttyd
 
+# ===== FIX: Xray installation =====
 RUN XRAY_VERSION="v26.3.27" && \
     cd /tmp && \
     curl -fsSL -o xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip" && \
-    unzip -o xray.zip -d /usr/local/bin/ && \
-    mv /usr/local/bin/xray /usr/local/bin/xray-binary 2>/dev/null || true && \
-    mv /usr/local/bin/Xray-linux-64/xray /usr/local/bin/xray 2>/dev/null || true && \
+    mkdir -p /tmp/xray-extract && \
+    unzip -o xray.zip -d /tmp/xray-extract/ && \
+    mv /tmp/xray-extract/xray /usr/local/bin/xray && \
     chmod +x /usr/local/bin/xray && \
     mkdir -p /usr/local/share/xray /usr/local/etc/xray /var/log/xray /etc/xray /usr/share/xray && \
     curl -fsSL -o /usr/local/share/xray/geoip.dat "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" && \
@@ -85,7 +86,7 @@ RUN XRAY_VERSION="v26.3.27" && \
     mv /usr/local/share/xray/dlc.dat /usr/local/share/xray/geosite.dat 2>/dev/null || true && \
     ln -sf /usr/local/share/xray/geoip.dat /usr/share/xray/geoip.dat && \
     ln -sf /usr/local/share/xray/geosite.dat /usr/share/xray/geosite.dat && \
-    rm -rf /tmp/xray.zip /tmp/Xray-linux-64*
+    rm -rf /tmp/xray.zip /tmp/xray-extract
 
 RUN git clone https://github.com/z3APA3A/3proxy.git /tmp/3proxy && \
     cd /tmp/3proxy && \
@@ -114,21 +115,21 @@ RUN curl -fsSL https://packagecloud.io/install/repositories/pufferpanel/pufferpa
 
 RUN cat > /etc/pufferpanel/config.json << 'PPEOF'
 {
-  "panel": {
-    "web": {
-      "listen": "0.0.0.0:8080",
-      "files": "/var/www/pufferpanel"
+    "panel": {
+        "web": {
+            "listen": "0.0.0.0:8080",
+            "files": "/var/www/pufferpanel"
+        },
+        "database": {
+            "dialect": "sqlite3",
+            "url": "file:/var/lib/pufferpanel/pufferpanel.db?cache=shared&mode=rwc"
+        }
     },
-    "database": {
-      "dialect": "sqlite3",
-      "url": "file:/var/lib/pufferpanel/pufferpanel.db?cache=shared&mode=rwc"
+    "daemon": {
+        "sftp": {
+            "port": 5657
+        }
     }
-  },
-  "daemon": {
-    "sftp": {
-      "port": 5657
-    }
-  }
 }
 PPEOF
 RUN cp /etc/pufferpanel/config.json /var/lib/pufferpanel/config.json
@@ -137,46 +138,46 @@ RUN mkdir -p /etc/3proxy /app /var/log/supervisor /tmp/cf
 
 RUN cat > /etc/xray/config.json << 'XRAYEOF'
 {
-  "log": { "access": "/dev/stdout", "error": "/dev/stderr", "loglevel": "warning" },
-  "inbounds": [
-    {
-      "port": 10086, "protocol": "vmess",
-      "settings": { "clients": [{ "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "alterId": 0 }] },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "/v2ray" } }
-    },
-    {
-      "port": 10087, "protocol": "vless",
-      "settings": { "clients": [{ "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901" }], "decryption": "none" },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } }
-    },
-    {
-      "port": 10088, "protocol": "trojan",
-      "settings": { "clients": [{ "password": "ELMINYAWE" }] },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } }
-    },
-    {
-      "listen": "0.0.0.0", "port": 8443, "protocol": "vless",
-      "settings": { "clients": [{ "id": "c3d4e5f6-a7b8-9012-cdef-123456789012", "flow": "xtls-rprx-vision" }], "decryption": "none" },
-      "streamSettings": {
-        "network": "tcp", "security": "reality",
-        "realitySettings": {
-          "dest": "www.microsoft.com:443",
-          "serverNames": ["www.microsoft.com"],
-          "privateKey": "__REALITY_PRIVATE_KEY__",
-          "shortIds": ["abcd12", "ef34"]
+    "log": { "access": "/dev/stdout", "error": "/dev/stderr", "loglevel": "warning" },
+    "inbounds": [
+        {
+            "port": 10086, "protocol": "vmess",
+            "settings": { "clients": [{ "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "alterId": 0 }] },
+            "streamSettings": { "network": "ws", "wsSettings": { "path": "/v2ray" } }
+        },
+        {
+            "port": 10087, "protocol": "vless",
+            "settings": { "clients": [{ "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901" }], "decryption": "none" },
+            "streamSettings": { "network": "ws", "wsSettings": { "path": "/vless" } }
+        },
+        {
+            "port": 10088, "protocol": "trojan",
+            "settings": { "clients": [{ "password": "ELMINYAWE" }] },
+            "streamSettings": { "network": "ws", "wsSettings": { "path": "/trojan" } }
+        },
+        {
+            "listen": "0.0.0.0", "port": 8443, "protocol": "vless",
+            "settings": { "clients": [{ "id": "c3d4e5f6-a7b8-9012-cdef-123456789012", "flow": "xtls-rprx-vision" }], "decryption": "none" },
+            "streamSettings": {
+                "network": "tcp", "security": "reality",
+                "realitySettings": {
+                    "dest": "www.microsoft.com:443",
+                    "serverNames": ["www.microsoft.com"],
+                    "privateKey": "__REALITY_PRIVATE_KEY__",
+                    "shortIds": ["abcd12", "ef34"]
+                }
+            }
         }
-      }
-    }
-  ],
-  "outbounds": [{ "protocol": "freedom", "settings": {} }]
+    ],
+    "outbounds": [{ "protocol": "freedom", "settings": {} }]
 }
 XRAYEOF
 
 RUN cat > /etc/shadowsocks-libev/config.json << 'SSEOF'
 {
-  "server": "0.0.0.0", "server_port": 8388,
-  "password": "ELMINYAWE", "method": "aes-256-gcm",
-  "timeout": 300, "fast_open": true
+    "server": "0.0.0.0", "server_port": 8388,
+    "password": "ELMINYAWE", "method": "aes-256-gcm",
+    "timeout": 300, "fast_open": true
 }
 SSEOF
 
@@ -406,18 +407,18 @@ RUN cat > /usr/local/bin/show-info.sh << 'SIEOF'
 while true; do
     clear
     echo "=============================================="
-    echo "    ELMINYAWE SERVER v3.1-fixed"
+    echo "  ELMINYAWE SERVER v3.1-fixed"
     echo "=============================================="
     echo ""
-    echo "[SSH]        Port: 22"
+    echo "[SSH] Port: 22"
     echo "[PufferPanel] Port: 8080"
-    echo "[TTYD]       Port: 8081"
-    echo "[API]        Port: 5001"
-    echo "[Nginx]      Ports: 80, 443, 9090"
-    echo "[SOCKS5]     Port: 1080"
+    echo "[TTYD] Port: 8081"
+    echo "[API] Port: 5001"
+    echo "[Nginx] Ports: 80, 443, 9090"
+    echo "[SOCKS5] Port: 1080"
     echo "[HTTP Proxy] Port: 8118"
     echo "[Shadowsocks] Port: 8388"
-    echo "[Xray WS]    Ports: 10086(vmess), 10087(vless), 10088(trojan)"
+    echo "[Xray WS] Ports: 10086(vmess), 10087(vless), 10088(trojan)"
     echo "[Xray Reality] Port: 8443"
     echo "[BadVPN UDPGW] Port: 7300 (127.0.0.1)"
     echo ""
@@ -447,14 +448,14 @@ while true; do
     fi
     echo ""
     echo "--- API Endpoints ---"
-    echo "http://<ip>:5001/         -> Server Info"
-    echo "http://<ip>:5001/health   -> Health Check"
-    echo "http://<ip>:5001/system   -> System Stats"
-    echo "http://<ip>:5001/services -> Running Services"
-    echo "http://<ip>:5001/proxy-info -> Proxy Info"
-    echo "http://<ip>:5001/inf      -> Full Info"
-    echo "http://<ip>:5001/speedtest -> Speed Test"
-    echo "http://<ip>:5001/subscription -> Subscription Links"
+    echo "http://:5001/         -> Server Info"
+    echo "http://:5001/health   -> Health Check"
+    echo "http://:5001/system   -> System Stats"
+    echo "http://:5001/services -> Running Services"
+    echo "http://:5001/proxy-info -> Proxy Info"
+    echo "http://:5001/inf      -> Full Info"
+    echo "http://:5001/speedtest -> Speed Test"
+    echo "http://:5001/subscription -> Subscription Links"
     echo ""
     sleep 30
 done
