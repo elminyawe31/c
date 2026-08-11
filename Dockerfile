@@ -14,15 +14,21 @@ RUN apt-get update && apt-get install -y \
     libwebsockets-dev libjson-c-dev zlib1g-dev \
     unzip libbz2-dev libncurses-dev libffi-dev \
     libreadline-dev libsqlite3-dev liblzma-dev \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# ─── Set root password & SSH on port 443 ─────────────────────
-RUN sed -i 's/#Port 22/Port 443/' /etc/ssh/sshd_config && \
-    sed -i 's/Port 22/Port 443/' /etc/ssh/sshd_config && \
-    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+# ─── Set root password & SSH on port 22 (default) ────────────
+RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
     sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
     sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
     mkdir -p /var/run/sshd
+
+# ─── Self-signed SSL certificate for HTTPS/443 ────────────────
+RUN mkdir -p /etc/nginx/ssl && \
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /etc/nginx/ssl/key.pem \
+    -out /etc/nginx/ssl/cert.pem \
+    -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
 
 # ─── pyenv + Python 3.13 ─────────────────────────────────────
 ENV PYENV_ROOT=/root/.pyenv
@@ -46,13 +52,14 @@ RUN bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-rel
 # ─── Shadowsocks-libev ───────────────────────────────────────
 RUN apt-get update && apt-get install -y shadowsocks-libev && rm -rf /var/lib/apt/lists/*
 
-# ─── 3proxy ──────────────────────────────────────────────────
+# ─── 3proxy (FIXED: use 3proxy_proxy instead of proxy) ───────
 RUN git clone https://github.com/z3APA3A/3proxy.git /tmp/3proxy && \
     cd /tmp/3proxy && \
     make -f Makefile.Linux && \
     mkdir -p /usr/local/3proxy/bin && \
     cp bin/3proxy /usr/local/3proxy/bin/ && \
-    cp bin/proxy /usr/local/3proxy/bin/ && \
+    cp bin/3proxy_proxy /usr/local/3proxy/bin/proxy && \
+    cp bin/3proxy_socks /usr/local/3proxy/bin/socks && \
     rm -rf /tmp/3proxy
 
 # ─── badvpn-udpgw ────────────────────────────────────────────
@@ -121,25 +128,7 @@ RUN cat > /etc/shadowsocks-libev/config.json << 'SSEOF'
 }
 SSEOF
 
-# ─── 3proxy config ──────────────────────────────────────────
-RUN cat > /etc/3proxy/3proxy.cfg << '3PEOF'
-daemon
-maxconn 1000
-nserver 1.1.1.1
-nserver 8.8.8.8
-nscache 65536
-timeouts 1 5 30 60 180 1800 15 60
-auth none
-allow *
-
-# SOCKS5
-socks -p1080
-
-# HTTP Proxy
-proxy -p8118
-3PEOF
-
-# ─── Nginx config (fixed syntax) ────────────────────────────
+# ─── Nginx config: HTTPS 443 → 3proxy HTTP 8118 ─────────────
 RUN cat > /etc/nginx/nginx.conf << 'NGEOF'
 user www-data;
 worker_processes auto;
@@ -153,6 +142,7 @@ http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
 
+    # Default server for TTYD/API on 9090
     server {
         listen 9090;
         server_name _;
@@ -183,6 +173,27 @@ http {
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection "upgrade";
+        }
+    }
+
+    # HTTPS 443 → 3proxy HTTP proxy (for NetMod / HTTP VPN)
+    server {
+        listen 443 ssl default_server;
+        server_name _;
+
+        ssl_certificate /etc/nginx/ssl/cert.pem;
+        ssl_certificate_key /etc/nginx/ssl/key.pem;
+        ssl_protocols SSLv3 TLSv1 TLSv1.1 TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+        ssl_prefer_server_ciphers on;
+
+        location / {
+            proxy_pass http://127.0.0.1:8118;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_connect_timeout 300s;
+            proxy_send_timeout 300s;
+            proxy_read_timeout 300s;
         }
     }
 }
@@ -220,7 +231,7 @@ def get_reality_keys():
 
 @app.route("/")
 def index():
-    return jsonify({"name": "ELMINYAWE SERVER", "version": "v2.4-fix", "status": "running"})
+    return jsonify({"name": "ELMINYAWE SERVER", "version": "v2.5-ssl", "status": "running"})
 
 @app.route("/health")
 def health():
@@ -249,6 +260,8 @@ def services():
 @app.route("/proxy-info")
 def proxy_info():
     return jsonify({
+        "ssh": {"host": "0.0.0.0", "port": 22},
+        "http_proxy_ssl": {"host": "0.0.0.0", "port": 443, "type": "https"},
         "socks5": {"host": "0.0.0.0", "port": 1080},
         "http": {"host": "0.0.0.0", "port": 8118},
         "shadowsocks": {"port": 8388, "method": "aes-256-gcm", "password": PASS_SS}
@@ -278,7 +291,7 @@ def inf():
 
     return jsonify({
         "server": "ELMINYAWE",
-        "version": "v2.4-fix",
+        "version": "v2.5-ssl",
         "custom_domain": domain,
         "cloudflare_urls": cf_urls,
         "links": links,
@@ -323,20 +336,21 @@ RUN cat > /usr/local/bin/show-info.sh << 'SIEOF'
 while true; do
     clear
     echo "╔══════════════════════════════════════════╗"
-    echo "║     ELMINYAWE SERVER v2.4-fix          ║"
+    echo "║     ELMINYAWE SERVER v2.5-ssl            ║"
     echo "╠══════════════════════════════════════════╣"
-    echo "│ SSH:       Port 443  (root)"
-    echo "│ TTYD:      Port 8081"
-    echo "│ API:       Port 5001"
-    echo "│ VMess:     Port 10086"
-    echo "│ VLESS:     Port 10087"
-    echo "│ Trojan:    Port 10088"
-    echo "│ SS:        Port 8388"
-    echo "│ SOCKS5:    Port 1080"
-    echo "│ HTTP:      Port 8118"
-    echo "│ Panel:     Port 8080 (via Nginx 9090)"
-    echo "│ UDPGW:     Port 7300"
-    echo "│ Reality:   Port 8443"
+    echo "│ SSH: Port 22 (root)"
+    echo "│ HTTP Proxy SSL: Port 443 (→ 8118)"
+    echo "│ TTYD: Port 8081"
+    echo "│ API: Port 5001"
+    echo "│ VMess: Port 10086"
+    echo "│ VLESS: Port 10087"
+    echo "│ Trojan: Port 10088"
+    echo "│ SS: Port 8388"
+    echo "│ SOCKS5: Port 1080"
+    echo "│ HTTP Proxy: Port 8118"
+    echo "│ Panel: Port 8080 (via Nginx 9090)"
+    echo "│ UDPGW: Port 7300"
+    echo "│ Reality: Port 8443"
     echo "╚══════════════════════════════════════════╝"
     echo ""
     echo "Cloudflare URLs:"
@@ -384,7 +398,7 @@ logfile_maxbytes=0
 pidfile=/tmp/supervisord.pid
 
 [program:sshd]
-command=/usr/sbin/sshd -D -p 443
+command=/usr/sbin/sshd -D
 autostart=true
 autorestart=true
 stdout_logfile=/dev/stdout
@@ -537,6 +551,31 @@ else
     echo "[!] Using default root password: ELMINYAWE"
 fi
 
+# Generate 3proxy config with custom user/pass
+PROXY_USER="${PROXY_USER:-admin}"
+PROXY_PASS="${PROXY_PASS:-ELMINYAWE}"
+
+cat > /etc/3proxy/3proxy.cfg << EOF
+daemon
+maxconn 1000
+nserver 1.1.1.1
+nserver 8.8.8.8
+nscache 65536
+timeouts 1 5 30 60 180 1800 15 60
+auth strong
+users ${PROXY_USER}:CL:${PROXY_PASS}
+allow ${PROXY_USER}
+
+# SOCKS5 (no auth)
+socks -p1080
+
+# HTTP Proxy (auth required)
+proxy -p8118
+EOF
+
+echo "[+] 3proxy HTTP proxy user: ${PROXY_USER}"
+echo "[+] 3proxy HTTP proxy pass: ${PROXY_PASS}"
+
 # Generate Reality x25519 keys if not exists
 if [ ! -f /etc/xray/reality_keys.json ]; then
     echo "[+] Generating Reality x25519 keys..."
@@ -557,12 +596,16 @@ sed -i "s|__REALITY_PRIVATE_KEY__|$PRIVATE_KEY|g" /etc/xray/config.json
 # Start pufferpanel admin setup in background
 (/usr/local/bin/setup-admin.sh) &
 
-echo "[+] Starting ELMINYAWE SERVER v2.4-fix..."
-echo "[+] Services: SSH(443), TTYD(8081), API(5001), VMess(10086), VLESS(10087), Trojan(10088), SS(8388), SOCKS5(1080), HTTP(8118), Panel(8080), UDPGW(7300), Reality(8443)"
+echo "[+] Starting ELMINYAWE SERVER v2.5-ssl..."
+echo "[+] SSH: Port 22 (root)"
+echo "[+] HTTP Proxy SSL: Port 443 (→ 8118) | User: ${PROXY_USER}"
+echo "[+] TTYD: Port 8081 | API: Port 5001"
+echo "[+] VMess: 10086 | VLESS: 10087 | Trojan: 10088 | SS: 8388"
+echo "[+] SOCKS5: 1080 | HTTP: 8118 | Panel: 8080 | UDPGW: 7300 | Reality: 8443"
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/services.conf
 EPEOF
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-EXPOSE 443 1080 8443 7300 8080 8081 8118 8388 9090 5001 10086 10087 10088
+EXPOSE 22 443 1080 8443 7300 8080 8081 8118 8388 9090 5001 10086 10087 10088
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
