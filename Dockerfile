@@ -108,17 +108,12 @@ RUN curl -fsSL --output /usr/local/bin/cloudflared \
     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" && \
     chmod +x /usr/local/bin/cloudflared
 
-# ===== FIX 2: PufferPanel - extract binary from .deb directly =====
-RUN PUFFER_VERSION=$(curl -s https://api.github.com/repos/PufferPanel/PufferPanel/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/') && \
-    echo "[*] Installing PufferPanel ${PUFFER_VERSION}..." && \
-    curl -fsSL -o /tmp/pufferpanel.deb \
-    "https://github.com/pufferpanel/pufferpanel/releases/download/${PUFFER_VERSION}/pufferpanel_${PUFFER_VERSION#v}_amd64.deb" && \
-    dpkg-deb -x /tmp/pufferpanel.deb /tmp/pufferpanel-extract && \
-    cp /tmp/pufferpanel-extract/usr/bin/pufferpanel /usr/local/bin/pufferpanel && \
-    chmod +x /usr/local/bin/pufferpanel && \
+# ===== FIX 2: PufferPanel via packagecloud (from con repo) =====
+RUN curl -s https://packagecloud.io/install/repositories/pufferpanel/pufferpanel/script.deb.sh | os=ubuntu dist=noble bash && \
+    apt-get install -y pufferpanel && \
+    rm -rf /var/lib/apt/lists/* && \
     mkdir -p /var/lib/pufferpanel/email /var/lib/pufferpanel/servers /etc/pufferpanel /var/log/pufferpanel /var/www/pufferpanel && \
-    echo '{}' > /var/lib/pufferpanel/email/emails.json && \
-    rm -rf /tmp/pufferpanel.deb /tmp/pufferpanel-extract
+    echo '{}' > /var/lib/pufferpanel/email/emails.json
 
 RUN cat > /etc/pufferpanel/config.json << 'PPEOF'
 {
@@ -610,9 +605,9 @@ autostart=true
 autorestart=true
 priority=30
 
-# ===== FIX 5: Use /usr/local/bin/pufferpanel =====
+# ===== FIX 5: Back to /usr/bin/pufferpanel (apt install puts it there) =====
 [program:pufferpanel]
-command=/usr/local/bin/pufferpanel run
+command=/usr/bin/pufferpanel run
 autostart=true
 autorestart=true
 priority=40
