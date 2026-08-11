@@ -108,12 +108,15 @@ RUN curl -fsSL --output /usr/local/bin/cloudflared \
     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" && \
     chmod +x /usr/local/bin/cloudflared
 
-# ===== FIX 2: PufferPanel via packagecloud (from con repo) =====
-RUN curl -s https://packagecloud.io/install/repositories/pufferpanel/pufferpanel/script.deb.sh | os=ubuntu dist=noble bash && \
-    apt-get install -y pufferpanel && \
-    rm -rf /var/lib/apt/lists/* && \
+# ===== FIX 2: PufferPanel - extract binary from .deb directly =====
+RUN curl -fsSL -o /tmp/pufferpanel.deb \
+    "https://github.com/pufferpanel/pufferpanel/releases/download/v3.0.9/pufferpanel_3.0.9_amd64.deb" && \
+    dpkg-deb -x /tmp/pufferpanel.deb /tmp/pufferpanel-extract && \
+    cp /tmp/pufferpanel-extract/usr/bin/pufferpanel /usr/local/bin/pufferpanel && \
+    chmod +x /usr/local/bin/pufferpanel && \
     mkdir -p /var/lib/pufferpanel/email /var/lib/pufferpanel/servers /etc/pufferpanel /var/log/pufferpanel /var/www/pufferpanel && \
-    echo '{}' > /var/lib/pufferpanel/email/emails.json
+    echo '{}' > /var/lib/pufferpanel/email/emails.json && \
+    rm -rf /tmp/pufferpanel.deb /tmp/pufferpanel-extract
 
 RUN cat > /etc/pufferpanel/config.json << 'PPEOF'
 {
@@ -507,7 +510,6 @@ fi
 SAEOF
 RUN chmod +x /usr/local/bin/setup-admin.sh
 
-# ===== FIX 4: cloudflared quick tunnels =====
 RUN cat > /usr/local/bin/cf-tunnels.sh << 'CFEOF'
 #!/bin/bash
 mkdir -p /tmp/cf
@@ -605,9 +607,9 @@ autostart=true
 autorestart=true
 priority=30
 
-# ===== FIX 5: Back to /usr/bin/pufferpanel (apt install puts it there) =====
+# ===== FIX 4: Use /usr/local/bin/pufferpanel (extracted from .deb) =====
 [program:pufferpanel]
-command=/usr/bin/pufferpanel run
+command=/usr/local/bin/pufferpanel run
 autostart=true
 autorestart=true
 priority=40
@@ -622,6 +624,7 @@ directory=/app
 
 [program:show-info]
 command=/usr/local/bin/show-info.sh
+autostart=true
 autostart=true
 autorestart=true
 priority=60
@@ -647,7 +650,6 @@ startsecs=0
 priority=5
 CFSC
 
-# ===== FIX 6: entrypoint with $NF parsing + validation + fallback =====
 RUN cat > /usr/local/bin/entrypoint.sh << 'EPEOF'
 #!/bin/bash
 set -e
