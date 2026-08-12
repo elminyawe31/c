@@ -47,6 +47,10 @@ RUN curl -fsSL --output /usr/local/bin/cloudflared \
     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" && \
     chmod +x /usr/local/bin/cloudflared
 
+# ── Ngrok (TCP Tunnel for SSH over TLS) ───────────────────────────────────
+RUN curl -fsSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | tar xz -C /usr/local/bin && \
+    chmod +x /usr/local/bin/ngrok
+
 # ── SSH Server ──────────────────────────────────────────────────────────────
 RUN mkdir -p /var/run/sshd /run/sshd && \
     sed -i 's/^#\s*\(PermitRootLogin\).*/\1 yes/' /etc/ssh/sshd_config && \
@@ -70,7 +74,7 @@ RUN mkdir -p /etc/nginx/ssl /etc/stunnel && \
     cat /etc/nginx/ssl/cert.pem /etc/nginx/ssl/key.pem > /etc/stunnel/stunnel.pem && \
     chmod 600 /etc/stunnel/stunnel.pem
 
-# ── Nginx (HTTP Proxy on 8443, no longer 443) ───────────────────────────────
+# ── Nginx (HTTPS Proxy on 8443) ─────────────────────────────────────────────
 RUN cat > /etc/nginx/nginx.conf << 'NGEOF'
 user www-data;
 worker_processes auto;
@@ -155,7 +159,7 @@ RUN git clone https://github.com/z3APA3A/3proxy.git /tmp/3proxy && \
     cp bin/3proxy_proxy /usr/local/3proxy/bin/proxy 2>/dev/null || true && \
     cp bin/3proxy_socks /usr/local/3proxy/bin/socks 2>/dev/null || true && \
     rm -rf /tmp/3proxy && \
-    mkdir -p /etc/3proxy /var/log/supervisor /tmp/cf
+    mkdir -p /etc/3proxy /var/log/supervisor /tmp/cf /tmp/ngrok
 
 # ── Flask API ───────────────────────────────────────────────────────────────
 RUN mkdir -p /app
@@ -168,7 +172,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return jsonify({"name": "ELMINYAWE SERVER", "version": "v3.4-stunnel", "status": "running"})
+    return jsonify({"name": "ELMINYAWE SERVER", "version": "v4.1-ngrok", "status": "running"})
 
 @app.route("/health")
 def health():
@@ -198,9 +202,20 @@ def services():
 
 @app.route("/proxy-info")
 def proxy_info():
+    ngrok_url = ""
+    try:
+        with open("/tmp/ngrok/ngrok.log") as f:
+            for line in f:
+                m = re.search(r'tcp://([0-9a-z.-]+:\d+)', line)
+                if m:
+                    ngrok_url = m.group(1)
+                    break
+    except:
+        pass
     return jsonify({
         "ssh": {"host": "0.0.0.0", "port": 22, "user": "yaso", "note": "TCP port 22 required"},
         "stunnel_ssh": {"host": "0.0.0.0", "port": 443, "type": "tls", "sni": "customizable", "backend": 22},
+        "ngrok_tcp": {"host": ngrok_url, "port": 443, "type": "tls", "note": "USE THIS IN NETMOD!"},
         "https_proxy": {"host": "0.0.0.0", "port": 8443, "type": "tls", "backend": 8118, "auth": "yaso:ELMINYAWE"},
         "http_redirect": {"host": "0.0.0.0", "port": 80, "type": "redirect"},
         "socks5": {"host": "0.0.0.0", "port": 1080, "auth": "yaso:ELMINYAWE", "note": "SOCKS5 proxy"},
@@ -221,6 +236,16 @@ def inf():
                         break
         except Exception:
             pass
+    ngrok_url = ""
+    try:
+        with open("/tmp/ngrok/ngrok.log") as f:
+            for line in f:
+                m = re.search(r'tcp://([0-9a-z.-]+:\d+)', line)
+                if m:
+                    ngrok_url = m.group(1)
+                    break
+    except:
+        pass
     if domain:
         links = {
             "ttyd": "https://ttyd." + domain,
@@ -231,9 +256,10 @@ def inf():
         links = cf_urls
     return jsonify({
         "server": "ELMINYAWE",
-        "version": "v3.4-stunnel",
+        "version": "v4.1-ngrok",
         "custom_domain": domain,
         "cloudflare_urls": cf_urls,
+        "ngrok_tcp": ngrok_url,
         "links": links,
         "ssh_user": "yaso",
         "ssh_password": "ELMINYAWE",
@@ -257,21 +283,21 @@ export TERM=xterm
 while true; do
     clear
     echo "=============================================="
-    echo " ELMINYAWE SERVER v3.4 (STunnel + SSH + SOCKS5)"
+    echo " ELMINYAWE SERVER v4.1 (Ngrok + STunnel)"
     echo "=============================================="
     echo ""
-    echo "[STUNNEL SSH] Port: 443  |  TLS -> SSH:22  |  SNI: customizable"
-    echo "[SSH DIRECT]  Port: 22   |  User: yaso      |  Pass: ELMINYAWE"
-    echo "[NOTE]        >>> Add TCP Port 22 in Railway Dashboard for direct SSH <<<"
+    echo "[NGROK TCP]   Check /tmp/ngrok/ngrok.log for URL"
+    echo "[STUNNEL]     Port: 443 -> SSH:22"
+    echo "[SSH]         Port: 22  |  User: yaso  |  Pass: ELMINYAWE"
     echo ""
-    echo "[HTTPS PROXY] Port: 8443 |  User: yaso      |  Pass: ELMINYAWE"
-    echo "[SOCKS5]      Port: 1080 |  User: yaso      |  Pass: ELMINYAWE"
-    echo "[NOTE]        >>> Add TCP Port 1080 for SOCKS5 proxy <<<"
+    echo "[HTTPS PROXY] Port: 8443 |  User: yaso  |  Pass: ELMINYAWE"
+    echo "[SOCKS5]      Port: 1080 |  User: yaso  |  Pass: ELMINYAWE"
+    echo "[HTTP PROXY]  Port: 8118 |  User: yaso  |  Pass: ELMINYAWE"
     echo ""
-    echo "[HTTP PROXY]  Port: 8118 |  User: yaso      |  Pass: ELMINYAWE"
-    echo "[TTYD]        Port: 8081"
-    echo "[API]         Port: 5001"
-    echo "[Nginx]       Ports: 80, 8443, 9090"
+    echo "--- Ngrok TCP URL ---"
+    if [ -f /tmp/ngrok/ngrok.log ]; then
+        grep -oP 'tcp://\K[0-9a-z.-]+:\d+' /tmp/ngrok/ngrok.log | tail -1
+    fi
     echo ""
     echo "--- System Info ---"
     uptime
@@ -285,21 +311,8 @@ while true; do
     netstat -tlnp 2>/dev/null | grep -E ':(22|80|443|1080|8080|8081|8118|8443|9090|5001)' || \
     echo "No ss/netstat"
     echo ""
-    echo "--- Cloudflare URLs ---"
-    for svc in ttyd api nginx; do
-        if [ -f /tmp/cf_${svc}.log ]; then
-            url=$(grep -oP 'https?://[a-z0-9-]+\.trycloudflare\.com' /tmp/cf_${svc}.log | tail -1)
-            [ -n "$url" ] && echo "[$svc] $url"
-        fi
-    done
-    echo ""
     echo "--- API Endpoints ---"
-    echo "http://:5001/         -> Server Info"
-    echo "http://:5001/health   -> Health Check"
-    echo "http://:5001/system   -> System Stats"
-    echo "http://:5001/services -> Running Services"
-    echo "http://:5001/proxy-info -> Proxy Info"
-    echo "http://:5001/inf      -> Full Info"
+    echo "http://:5001/inf      -> Full Info + Ngrok URL"
     echo ""
     sleep 30
 done
@@ -313,7 +326,7 @@ mkdir -p /var/log/supervisor
 echo "[$(date)] Service Monitor Started" >> $LOG
 
 while true; do
-    for svc in ssh nginx 3proxy ttyd cloudflared flask-api stunnel; do
+    for svc in ssh nginx 3proxy ttyd cloudflared flask-api stunnel ngrok; do
         if ! pgrep -f "$svc" > /dev/null 2>&1; then
             echo "[$(date)] WARNING: $svc is not running!" >> $LOG
         fi
@@ -345,6 +358,20 @@ echo "[OK] Root password set."
 SAEOF
 RUN chmod +x /usr/local/bin/setup-admin.sh
 
+RUN cat > /usr/local/bin/ngrok-start.sh << 'NGEOF'
+#!/bin/bash
+TOKEN="3HoR5jQalMJmyiGGKrOzlVXdCmu_bF74mZnMGA95m2kyCZCR"
+
+echo "[*] Configuring Ngrok..."
+ngrok config add-authtoken "$TOKEN"
+
+mkdir -p /tmp/ngrok
+echo "[*] Starting Ngrok TCP tunnel on port 443..."
+echo "[*] This will give you a direct TCP address like: 0.tcp.ngrok.io:xxxxx"
+exec ngrok tcp 443 --log stdout --log-format json > /tmp/ngrok/ngrok.log 2>&1
+NGEOF
+RUN chmod +x /usr/local/bin/ngrok-start.sh
+
 RUN cat > /usr/local/bin/cf-tunnels.sh << 'CFEOF'
 #!/bin/bash
 mkdir -p /tmp/cf
@@ -364,20 +391,6 @@ start_tunnel "nginx" 9090
 
 sleep 10
 echo "[OK] All Cloudflare tunnels started."
-echo "[INFO] Waiting for URLs..."
-for svc in ttyd api nginx; do
-    logfile="${LOG_DIR}/cf_${svc}.log"
-    for i in $(seq 1 30); do
-        if [ -f "$logfile" ]; then
-            url=$(grep -oP 'https?://[a-z0-9-]+\.trycloudflare\.com' "$logfile" | head -1)
-            if [ -n "$url" ]; then
-                echo "[$svc] $url"
-                break
-            fi
-        fi
-        sleep 2
-    done
-done
 CFEOF
 RUN chmod +x /usr/local/bin/cf-tunnels.sh
 
@@ -407,6 +420,13 @@ command=/usr/bin/stunnel4 /etc/stunnel/stunnel.conf
 autostart=true
 autorestart=true
 priority=15
+
+[program:ngrok]
+command=/usr/local/bin/ngrok-start.sh
+autostart=true
+autorestart=true
+priority=16
+startsecs=10
 
 [program:nginx]
 command=/usr/sbin/nginx -g 'daemon off;'
@@ -463,8 +483,8 @@ RUN cat > /usr/local/bin/entrypoint.sh << 'EPEOF'
 set -e
 
 echo "=========================================="
-echo " ELMINYAWE SERVER v3.4"
-echo " STunnel:443 -> SSH:22 | SOCKS5 | HTTPS"
+echo " ELMINYAWE SERVER v4.1"
+echo " Ngrok TCP + STunnel:443 -> SSH:22"
 echo "=========================================="
 
 USER=${SSH_USER:-yaso}
@@ -485,30 +505,20 @@ echo "=========================================="
 echo "  IMPORTANT SETUP NOTES"
 echo "=========================================="
 echo ""
-echo "  [STUNNEL SSH - VPN]"
-echo "    Port: 443 (TLS) -> SSH:22"
-echo "    User: $USER  |  Pass: $PASS"
-echo "    SNI: You can set ANY SNI in your client (NetMod)"
-echo "    >>> Use Railway Domain on Port 443 for STunnel <<<"
+echo "  [NGROK TCP - USE THIS IN NETMOD]"
+echo "      Check logs after 30 seconds for:"
+echo "      tcp://0.tcp.ngrok.io:xxxxx"
+echo "      Use that address in NetMod (SSH + TLS)"
+echo ""
+echo "  [HTTPS PROXY (EASIEST)]"
+echo "      Use Railway Domain on port 8443 with HTTP protocol"
+echo "      User: $PROXY_USER | Pass: $PROXY_PASS"
 echo ""
 echo "  [SSH DIRECT]"
-echo "    Port: 22  |  User: $USER  |  Pass: $PASS"
-echo "    >>> Add TCP Port 22 in Railway Dashboard <<<"
+echo "      Port: 22 | User: $USER | Pass: $PASS"
 echo ""
-echo "  [HTTPS PROXY]"
-echo "    Port: 8443  |  User: $PROXY_USER  |  Pass: $PROXY_PASS"
-echo "    >>> Add TCP/Domain Port 8443 if needed <<<"
-echo ""
-echo "  [SOCKS5 PROXY]"
-echo "    Port: 1080  |  User: $PROXY_USER  |  Pass: $PROXY_PASS"
-echo "    >>> Add TCP Port 1080 for SOCKS5 <<<"
-echo ""
-echo "  [HTTP PROXY]"
-echo "    Port: 8118  |  User: $PROXY_USER  |  Pass: $PROXY_PASS"
-echo ""
-echo "  [ROOT ACCESS]"
-echo "    User: root  |  Pass: $ROOT_PASS"
-echo "    User '$USER' has sudo NOPASSWD privileges."
+echo "  [SOCKS5]"
+echo "      Port: 1080 | User: $PROXY_USER | Pass: $PROXY_PASS"
 echo ""
 echo "=========================================="
 echo ""
