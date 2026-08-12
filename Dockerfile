@@ -23,7 +23,7 @@ RUN apt-get update -y || (sleep 5 && apt-get update -y) && \
     libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev \
     nginx supervisor libtool libev-dev libc-ares-dev libmbedtls-dev \
     libsodium-dev libpcre2-dev automake pkg-config \
-    libwebsockets-dev libjson-c-dev zlib1g-dev \
+    libwebsockets-dev libjson-c-dev zlib1g-dev stunnel4 \
     && locale-gen en_US.UTF-8 && \
     rm -rf /var/lib/apt/lists/*
 
@@ -59,15 +59,18 @@ RUN mkdir -p /var/run/sshd /run/sshd && \
     echo "PermitRootLogin yes" >> /etc/ssh/sshd_config && \
     echo "PasswordAuthentication yes" >> /etc/ssh/sshd_config
 
-# ── SSL/TLS (Nginx) ─────────────────────────────────────────────────────────
-RUN mkdir -p /etc/nginx/ssl && \
+# ── SSL/TLS Certificates ────────────────────────────────────────────────────
+RUN mkdir -p /etc/nginx/ssl /etc/stunnel && \
     openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
     -keyout /etc/nginx/ssl/key.pem \
     -out /etc/nginx/ssl/cert.pem \
     -subj "/C=US/ST=State/L=City/O=ELMINYAWE/CN=localhost" && \
     chmod 600 /etc/nginx/ssl/key.pem && \
-    chmod 644 /etc/nginx/ssl/cert.pem
+    chmod 644 /etc/nginx/ssl/cert.pem && \
+    cat /etc/nginx/ssl/cert.pem /etc/nginx/ssl/key.pem > /etc/stunnel/stunnel.pem && \
+    chmod 600 /etc/stunnel/stunnel.pem
 
+# ── Nginx (HTTP Proxy on 8443, no longer 443) ───────────────────────────────
 RUN cat > /etc/nginx/nginx.conf << 'NGEOF'
 user www-data;
 worker_processes auto;
@@ -106,7 +109,7 @@ http {
     }
 
     server {
-        listen 443 ssl http2 default_server;
+        listen 8443 ssl http2 default_server;
         server_name _;
 
         ssl_certificate /etc/nginx/ssl/cert.pem;
@@ -128,10 +131,21 @@ http {
     server {
         listen 80 default_server;
         server_name _;
-        return 301 https://$host$request_uri;
+        return 301 https://$host:8443$request_uri;
     }
 }
 NGEOF
+
+# ── STunnel (SSH over TLS on Port 443) ──────────────────────────────────────
+RUN cat > /etc/stunnel/stunnel.conf << 'STEOF'
+foreground = yes
+pid = /var/run/stunnel.pid
+
+[ssh]
+accept = 0.0.0.0:443
+connect = 127.0.0.1:22
+cert = /etc/stunnel/stunnel.pem
+STEOF
 
 # ── 3proxy (SOCKS5 + HTTP Proxy) ────────────────────────────────────────────
 RUN git clone https://github.com/z3APA3A/3proxy.git /tmp/3proxy && \
@@ -154,7 +168,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return jsonify({"name": "ELMINYAWE SERVER", "version": "v3.3-auth", "status": "running"})
+    return jsonify({"name": "ELMINYAWE SERVER", "version": "v3.4-stunnel", "status": "running"})
 
 @app.route("/health")
 def health():
@@ -186,7 +200,8 @@ def services():
 def proxy_info():
     return jsonify({
         "ssh": {"host": "0.0.0.0", "port": 22, "user": "yaso", "note": "TCP port 22 required"},
-        "https_proxy": {"host": "0.0.0.0", "port": 443, "type": "tls", "backend": 8118, "auth": "yaso:ELMINYAWE"},
+        "stunnel_ssh": {"host": "0.0.0.0", "port": 443, "type": "tls", "sni": "customizable", "backend": 22},
+        "https_proxy": {"host": "0.0.0.0", "port": 8443, "type": "tls", "backend": 8118, "auth": "yaso:ELMINYAWE"},
         "http_redirect": {"host": "0.0.0.0", "port": 80, "type": "redirect"},
         "socks5": {"host": "0.0.0.0", "port": 1080, "auth": "yaso:ELMINYAWE", "note": "SOCKS5 proxy"},
         "http": {"host": "0.0.0.0", "port": 8118, "auth": "yaso:ELMINYAWE"}
@@ -216,7 +231,7 @@ def inf():
         links = cf_urls
     return jsonify({
         "server": "ELMINYAWE",
-        "version": "v3.3-auth",
+        "version": "v3.4-stunnel",
         "custom_domain": domain,
         "cloudflare_urls": cf_urls,
         "links": links,
@@ -242,20 +257,21 @@ export TERM=xterm
 while true; do
     clear
     echo "=============================================="
-    echo " ELMINYAWE SERVER v3.3 (SSH:yaso + HTTPS + SOCKS5)"
+    echo " ELMINYAWE SERVER v3.4 (STunnel + SSH + SOCKS5)"
     echo "=============================================="
     echo ""
-    echo "[SSH]         Port: 22  |  User: yaso  |  Pass: ELMINYAWE"
-    echo "[NOTE]        >>> Add TCP Port 22 in Railway Dashboard for SSH access <<<"
+    echo "[STUNNEL SSH] Port: 443  |  TLS -> SSH:22  |  SNI: customizable"
+    echo "[SSH DIRECT]  Port: 22   |  User: yaso      |  Pass: ELMINYAWE"
+    echo "[NOTE]        >>> Add TCP Port 22 in Railway Dashboard for direct SSH <<<"
     echo ""
-    echo "[HTTPS PROXY] Port: 443  |  User: yaso  |  Pass: ELMINYAWE"
-    echo "[SOCKS5]      Port: 1080  |  User: yaso  |  Pass: ELMINYAWE"
+    echo "[HTTPS PROXY] Port: 8443 |  User: yaso      |  Pass: ELMINYAWE"
+    echo "[SOCKS5]      Port: 1080 |  User: yaso      |  Pass: ELMINYAWE"
     echo "[NOTE]        >>> Add TCP Port 1080 for SOCKS5 proxy <<<"
     echo ""
-    echo "[HTTP PROXY]  Port: 8118  |  User: yaso  |  Pass: ELMINYAWE"
+    echo "[HTTP PROXY]  Port: 8118 |  User: yaso      |  Pass: ELMINYAWE"
     echo "[TTYD]        Port: 8081"
     echo "[API]         Port: 5001"
-    echo "[Nginx]       Ports: 80, 443, 9090"
+    echo "[Nginx]       Ports: 80, 8443, 9090"
     echo ""
     echo "--- System Info ---"
     uptime
@@ -265,8 +281,8 @@ while true; do
     df -h / 2>/dev/null || echo "df not available"
     echo ""
     echo "--- Active Services ---"
-    ss -tlnp 2>/dev/null | grep -E ':(22|80|443|1080|8080|8081|8118|9090|5001)' || \
-    netstat -tlnp 2>/dev/null | grep -E ':(22|80|443|1080|8080|8081|8118|9090|5001)' || \
+    ss -tlnp 2>/dev/null | grep -E ':(22|80|443|1080|8080|8081|8118|8443|9090|5001)' || \
+    netstat -tlnp 2>/dev/null | grep -E ':(22|80|443|1080|8080|8081|8118|8443|9090|5001)' || \
     echo "No ss/netstat"
     echo ""
     echo "--- Cloudflare URLs ---"
@@ -297,7 +313,7 @@ mkdir -p /var/log/supervisor
 echo "[$(date)] Service Monitor Started" >> $LOG
 
 while true; do
-    for svc in ssh nginx 3proxy ttyd cloudflared flask-api; do
+    for svc in ssh nginx 3proxy ttyd cloudflared flask-api stunnel; do
         if ! pgrep -f "$svc" > /dev/null 2>&1; then
             echo "[$(date)] WARNING: $svc is not running!" >> $LOG
         fi
@@ -386,6 +402,12 @@ autostart=true
 autorestart=true
 priority=10
 
+[program:stunnel]
+command=/usr/bin/stunnel4 /etc/stunnel/stunnel.conf
+autostart=true
+autorestart=true
+priority=15
+
 [program:nginx]
 command=/usr/sbin/nginx -g 'daemon off;'
 autostart=true
@@ -441,8 +463,8 @@ RUN cat > /usr/local/bin/entrypoint.sh << 'EPEOF'
 set -e
 
 echo "=========================================="
-echo " ELMINYAWE SERVER v3.3"
-echo " SSH:yaso | HTTPS+Auth | SOCKS5+Auth"
+echo " ELMINYAWE SERVER v3.4"
+echo " STunnel:443 -> SSH:22 | SOCKS5 | HTTPS"
 echo "=========================================="
 
 USER=${SSH_USER:-yaso}
@@ -463,34 +485,29 @@ echo "=========================================="
 echo "  IMPORTANT SETUP NOTES"
 echo "=========================================="
 echo ""
-echo "  [SSH ACCESS]"
-echo "    User: $USER"
-echo "    Pass: $PASS"
-echo "    Port: 22"
-echo "    >>> YOU MUST ADD TCP PORT 22 IN RAILWAY DASHBOARD <<<"
-echo "    >>> Go to: Settings -> Networking -> Public Networking -> TCP:22 <<<"
+echo "  [STUNNEL SSH - VPN]"
+echo "    Port: 443 (TLS) -> SSH:22"
+echo "    User: $USER  |  Pass: $PASS"
+echo "    SNI: You can set ANY SNI in your client (NetMod)"
+echo "    >>> Use Railway Domain on Port 443 for STunnel <<<"
 echo ""
-echo "  [HTTPS PROXY - VPN]"
-echo "    Domain: https://c-production-5e36.up.railway.app (example)"
-echo "    User: $PROXY_USER"
-echo "    Pass: $PROXY_PASS"
-echo "    Port: 443  (Use Domain/HTTPS in Railway)"
+echo "  [SSH DIRECT]"
+echo "    Port: 22  |  User: $USER  |  Pass: $PASS"
+echo "    >>> Add TCP Port 22 in Railway Dashboard <<<"
+echo ""
+echo "  [HTTPS PROXY]"
+echo "    Port: 8443  |  User: $PROXY_USER  |  Pass: $PROXY_PASS"
+echo "    >>> Add TCP/Domain Port 8443 if needed <<<"
 echo ""
 echo "  [SOCKS5 PROXY]"
-echo "    User: $PROXY_USER"
-echo "    Pass: $PROXY_PASS"
-echo "    Port: 1080"
-echo "    >>> YOU MUST ADD TCP PORT 1080 FOR SOCKS5 TO WORK <<<"
-echo "    >>> Go to: Settings -> Networking -> Public Networking -> TCP:1080 <<<"
+echo "    Port: 1080  |  User: $PROXY_USER  |  Pass: $PROXY_PASS"
+echo "    >>> Add TCP Port 1080 for SOCKS5 <<<"
 echo ""
 echo "  [HTTP PROXY]"
-echo "    User: $PROXY_USER"
-echo "    Pass: $PROXY_PASS"
-echo "    Port: 8118"
+echo "    Port: 8118  |  User: $PROXY_USER  |  Pass: $PROXY_PASS"
 echo ""
 echo "  [ROOT ACCESS]"
 echo "    User: root  |  Pass: $ROOT_PASS"
-echo "    System runs fully as root internally."
 echo "    User '$USER' has sudo NOPASSWD privileges."
 echo ""
 echo "=========================================="
@@ -529,7 +546,7 @@ exec /usr/bin/supervisord -c /etc/supervisor/conf.d/services.conf
 EPEOF
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-EXPOSE 22 80 443 1080 8080 8081 8118 9090 5001
+EXPOSE 22 80 443 1080 8080 8081 8118 8443 9090 5001
 
 WORKDIR /app
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
