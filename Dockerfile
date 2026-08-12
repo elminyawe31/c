@@ -47,10 +47,6 @@ RUN curl -fsSL --output /usr/local/bin/cloudflared \
     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" && \
     chmod +x /usr/local/bin/cloudflared
 
-# ── Ngrok (TCP Tunnel for SSH over TLS) ───────────────────────────────────
-RUN curl -fsSL https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz | tar xz -C /usr/local/bin && \
-    chmod +x /usr/local/bin/ngrok
-
 # ── SSH Server ──────────────────────────────────────────────────────────────
 RUN mkdir -p /var/run/sshd /run/sshd && \
     sed -i 's/^#\s*\(PermitRootLogin\).*/\1 yes/' /etc/ssh/sshd_config && \
@@ -74,7 +70,7 @@ RUN mkdir -p /etc/nginx/ssl /etc/stunnel && \
     cat /etc/nginx/ssl/cert.pem /etc/nginx/ssl/key.pem > /etc/stunnel/stunnel.pem && \
     chmod 600 /etc/stunnel/stunnel.pem
 
-# ── Nginx (HTTPS Proxy on 8443) ─────────────────────────────────────────────
+# ── Nginx (HTTPS Proxy on 8443) ───────────────────────────────────────────────
 RUN cat > /etc/nginx/nginx.conf << 'NGEOF'
 user www-data;
 worker_processes auto;
@@ -159,7 +155,33 @@ RUN git clone https://github.com/z3APA3A/3proxy.git /tmp/3proxy && \
     cp bin/3proxy_proxy /usr/local/3proxy/bin/proxy 2>/dev/null || true && \
     cp bin/3proxy_socks /usr/local/3proxy/bin/socks 2>/dev/null || true && \
     rm -rf /tmp/3proxy && \
-    mkdir -p /etc/3proxy /var/log/supervisor /tmp/cf /tmp/ngrok
+    mkdir -p /etc/3proxy /var/log/supervisor /tmp/cf /tmp/pinggy
+
+# ── Pinggy (TCP Tunnel - FREE, no token needed) ─────────────────────────────
+RUN cat > /usr/local/bin/pinggy-start.sh << 'PGEOF'
+#!/bin/bash
+mkdir -p /tmp/pinggy
+echo "[*] Starting Pinggy TCP tunnel..."
+echo "[*] This will give you a direct TCP address like: xxxxx.a.free.pinggy.link:xxxxx"
+echo "[*] Use that address in NetMod (SSH + TLS)"
+echo "[*] Waiting for Pinggy to establish connection..."
+
+while true; do
+    ssh -o BatchMode=yes \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o ServerAliveInterval=30 \
+        -o ServerAliveCountMax=3 \
+        -o ExitOnForwardFailure=yes \
+        -p 443 \
+        -R0:localhost:443 \
+        tcp@a.pinggy.io 2>&1 | tee /tmp/pinggy/pinggy.log
+
+    echo "[WARN] Pinggy disconnected. Reconnecting in 10s..."
+    sleep 10
+done
+PGEOF
+RUN chmod +x /usr/local/bin/pinggy-start.sh
 
 # ── Flask API ───────────────────────────────────────────────────────────────
 RUN mkdir -p /app
@@ -170,9 +192,25 @@ from flask import Flask, jsonify
 
 app = Flask(__name__)
 
+def get_pinggy_url():
+    try:
+        with open("/tmp/pinggy/pinggy.log") as f:
+            content = f.read()
+            # Pinggy format: tcp://xxxx.a.free.pinggy.link:xxxxx
+            m = re.search(r'tcp://([0-9a-zA-Z.-]+\.pinggy\.link:\d+)', content)
+            if m:
+                return m.group(1)
+            # Alternative format
+            m = re.search(r'([0-9a-zA-Z-]+\.a\.free\.pinggy\.link:\d+)', content)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return ""
+
 @app.route("/")
 def index():
-    return jsonify({"name": "ELMINYAWE SERVER", "version": "v4.1-ngrok", "status": "running"})
+    return jsonify({"name": "ELMINYAWE SERVER", "version": "v5.0-pinggy", "status": "running"})
 
 @app.route("/health")
 def health():
@@ -202,20 +240,11 @@ def services():
 
 @app.route("/proxy-info")
 def proxy_info():
-    ngrok_url = ""
-    try:
-        with open("/tmp/ngrok/ngrok.log") as f:
-            for line in f:
-                m = re.search(r'tcp://([0-9a-z.-]+:\d+)', line)
-                if m:
-                    ngrok_url = m.group(1)
-                    break
-    except:
-        pass
+    pinggy = get_pinggy_url()
     return jsonify({
         "ssh": {"host": "0.0.0.0", "port": 22, "user": "yaso", "note": "TCP port 22 required"},
         "stunnel_ssh": {"host": "0.0.0.0", "port": 443, "type": "tls", "sni": "customizable", "backend": 22},
-        "ngrok_tcp": {"host": ngrok_url, "port": 443, "type": "tls", "note": "USE THIS IN NETMOD!"},
+        "pinggy_tcp": {"host": pinggy, "note": "USE THIS IN NETMOD! FREE TCP TUNNEL"},
         "https_proxy": {"host": "0.0.0.0", "port": 8443, "type": "tls", "backend": 8118, "auth": "yaso:ELMINYAWE"},
         "http_redirect": {"host": "0.0.0.0", "port": 80, "type": "redirect"},
         "socks5": {"host": "0.0.0.0", "port": 1080, "auth": "yaso:ELMINYAWE", "note": "SOCKS5 proxy"},
@@ -236,16 +265,7 @@ def inf():
                         break
         except Exception:
             pass
-    ngrok_url = ""
-    try:
-        with open("/tmp/ngrok/ngrok.log") as f:
-            for line in f:
-                m = re.search(r'tcp://([0-9a-z.-]+:\d+)', line)
-                if m:
-                    ngrok_url = m.group(1)
-                    break
-    except:
-        pass
+    pinggy = get_pinggy_url()
     if domain:
         links = {
             "ttyd": "https://ttyd." + domain,
@@ -256,10 +276,10 @@ def inf():
         links = cf_urls
     return jsonify({
         "server": "ELMINYAWE",
-        "version": "v4.1-ngrok",
+        "version": "v5.0-pinggy",
         "custom_domain": domain,
         "cloudflare_urls": cf_urls,
-        "ngrok_tcp": ngrok_url,
+        "pinggy_tcp": pinggy,
         "links": links,
         "ssh_user": "yaso",
         "ssh_password": "ELMINYAWE",
@@ -283,10 +303,13 @@ export TERM=xterm
 while true; do
     clear
     echo "=============================================="
-    echo " ELMINYAWE SERVER v4.1 (Ngrok + STunnel)"
+    echo " ELMINYAWE SERVER v5.0 (Pinggy + STunnel)"
     echo "=============================================="
     echo ""
-    echo "[NGROK TCP]   Check /tmp/ngrok/ngrok.log for URL"
+    echo "[PINGGY TCP]  Check /tmp/pinggy/pinggy.log for URL"
+    echo "              Example: xxxxx.a.free.pinggy.link:xxxxx"
+    echo "              USE THIS IN NETMOD (SSH + TLS)!"
+    echo ""
     echo "[STUNNEL]     Port: 443 -> SSH:22"
     echo "[SSH]         Port: 22  |  User: yaso  |  Pass: ELMINYAWE"
     echo ""
@@ -294,9 +317,10 @@ while true; do
     echo "[SOCKS5]      Port: 1080 |  User: yaso  |  Pass: ELMINYAWE"
     echo "[HTTP PROXY]  Port: 8118 |  User: yaso  |  Pass: ELMINYAWE"
     echo ""
-    echo "--- Ngrok TCP URL ---"
-    if [ -f /tmp/ngrok/ngrok.log ]; then
-        grep -oP 'tcp://\K[0-9a-z.-]+:\d+' /tmp/ngrok/ngrok.log | tail -1
+    echo "--- Pinggy TCP URL ---"
+    if [ -f /tmp/pinggy/pinggy.log ]; then
+        grep -oP 'tcp://\K[0-9a-zA-Z.-]+\.pinggy\.link:\d+' /tmp/pinggy/pinggy.log | tail -1
+        grep -oP '[0-9a-zA-Z-]+\.a\.free\.pinggy\.link:\d+' /tmp/pinggy/pinggy.log | tail -1
     fi
     echo ""
     echo "--- System Info ---"
@@ -312,7 +336,7 @@ while true; do
     echo "No ss/netstat"
     echo ""
     echo "--- API Endpoints ---"
-    echo "http://:5001/inf      -> Full Info + Ngrok URL"
+    echo "http://:5001/inf      -> Full Info + Pinggy URL"
     echo ""
     sleep 30
 done
@@ -326,7 +350,7 @@ mkdir -p /var/log/supervisor
 echo "[$(date)] Service Monitor Started" >> $LOG
 
 while true; do
-    for svc in ssh nginx 3proxy ttyd cloudflared flask-api stunnel ngrok; do
+    for svc in ssh nginx 3proxy ttyd cloudflared flask-api stunnel pinggy; do
         if ! pgrep -f "$svc" > /dev/null 2>&1; then
             echo "[$(date)] WARNING: $svc is not running!" >> $LOG
         fi
@@ -357,20 +381,6 @@ echo "[OK] User '$USER' added to sudoers (NOPASSWD)"
 echo "[OK] Root password set."
 SAEOF
 RUN chmod +x /usr/local/bin/setup-admin.sh
-
-RUN cat > /usr/local/bin/ngrok-start.sh << 'NGEOF'
-#!/bin/bash
-TOKEN="3HoR5jQalMJmyiGGKrOzlVXdCmu_bF74mZnMGA95m2kyCZCR"
-
-echo "[*] Configuring Ngrok..."
-ngrok config add-authtoken "$TOKEN"
-
-mkdir -p /tmp/ngrok
-echo "[*] Starting Ngrok TCP tunnel on port 443..."
-echo "[*] This will give you a direct TCP address like: 0.tcp.ngrok.io:xxxxx"
-exec ngrok tcp 443 --log stdout --log-format json > /tmp/ngrok/ngrok.log 2>&1
-NGEOF
-RUN chmod +x /usr/local/bin/ngrok-start.sh
 
 RUN cat > /usr/local/bin/cf-tunnels.sh << 'CFEOF'
 #!/bin/bash
@@ -421,12 +431,12 @@ autostart=true
 autorestart=true
 priority=15
 
-[program:ngrok]
-command=/usr/local/bin/ngrok-start.sh
+[program:pinggy]
+command=/usr/local/bin/pinggy-start.sh
 autostart=true
 autorestart=true
 priority=16
-startsecs=10
+startsecs=5
 
 [program:nginx]
 command=/usr/sbin/nginx -g 'daemon off;'
@@ -483,8 +493,8 @@ RUN cat > /usr/local/bin/entrypoint.sh << 'EPEOF'
 set -e
 
 echo "=========================================="
-echo " ELMINYAWE SERVER v4.1"
-echo " Ngrok TCP + STunnel:443 -> SSH:22"
+echo " ELMINYAWE SERVER v5.0"
+echo " Pinggy TCP + STunnel:443 -> SSH:22"
 echo "=========================================="
 
 USER=${SSH_USER:-yaso}
@@ -505,9 +515,10 @@ echo "=========================================="
 echo "  IMPORTANT SETUP NOTES"
 echo "=========================================="
 echo ""
-echo "  [NGROK TCP - USE THIS IN NETMOD]"
+echo "  [PINGGY TCP - USE THIS IN NETMOD]"
+echo "      FREE tunnel - NO token needed!"
 echo "      Check logs after 30 seconds for:"
-echo "      tcp://0.tcp.ngrok.io:xxxxx"
+echo "      xxxxx.a.free.pinggy.link:xxxxx"
 echo "      Use that address in NetMod (SSH + TLS)"
 echo ""
 echo "  [HTTPS PROXY (EASIEST)]"
