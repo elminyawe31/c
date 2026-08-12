@@ -42,34 +42,6 @@ RUN curl -fsSL --output /usr/local/bin/cloudflared \
     "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" && \
     chmod +x /usr/local/bin/cloudflared
 
-# ── PufferPanel ─────────────────────────────────────────────────────────────
-RUN curl -s https://packagecloud.io/install/repositories/pufferpanel/pufferpanel/script.deb.sh | os=ubuntu dist=noble bash && \
-    apt-get install -y pufferpanel && \
-    rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /var/lib/pufferpanel/email /var/lib/pufferpanel/servers /etc/pufferpanel /var/log/pufferpanel && \
-    echo '{}' > /var/lib/pufferpanel/email/emails.json
-
-RUN cat > /etc/pufferpanel/config.json << 'PPEOF'
-{
-  "panel": {
-    "web": {
-      "listen": "0.0.0.0:8080",
-      "files": "/var/www/pufferpanel"
-    },
-    "database": {
-      "dialect": "sqlite3",
-      "url": "file:/var/lib/pufferpanel/pufferpanel.db?cache=shared&mode=rwc"
-    }
-  },
-  "daemon": {
-    "sftp": {
-      "port": 5657
-    }
-  }
-}
-PPEOF
-RUN cp /etc/pufferpanel/config.json /var/lib/pufferpanel/config.json
-
 # ── SSH Server ──────────────────────────────────────────────────────────────
 RUN mkdir -p /var/run/sshd /run/sshd && \
     sed -i 's/^#\s*\(PermitRootLogin\).*/\1 yes/' /etc/ssh/sshd_config && \
@@ -257,6 +229,7 @@ APIEOF
 # ── Helper scripts ──────────────────────────────────────────────────────────
 RUN cat > /usr/local/bin/show-info.sh << 'SIEOF'
 #!/bin/bash
+export TERM=xterm
 while true; do
     clear
     echo "=============================================="
@@ -264,7 +237,6 @@ while true; do
     echo "=============================================="
     echo ""
     echo "[SSH]        Port: 22"
-    echo "[PufferPanel] Port: 8080"
     echo "[TTYD]       Port: 8081"
     echo "[API]        Port: 5001"
     echo "[Nginx]      Ports: 80, 443, 9090"
@@ -311,7 +283,7 @@ mkdir -p /var/log/supervisor
 echo "[$(date)] Service Monitor Started" >> $LOG
 
 while true; do
-    for svc in ssh nginx 3proxy ttyd cloudflared pufferpanel flask-api; do
+    for svc in ssh nginx 3proxy ttyd cloudflared flask-api; do
         if ! pgrep -f "$svc" > /dev/null 2>&1; then
             echo "[$(date)] WARNING: $svc is not running!" >> $LOG
         fi
@@ -328,10 +300,6 @@ if [ -z "$ROOT_PASSWORD" ]; then
 fi
 echo "root:$ROOT_PASSWORD" | chpasswd
 echo "[OK] Root password set."
-if command -v pufferpanel > /dev/null 2>&1; then
-    pufferpanel user add --name admin --email admin@elminyawe.local --password "$ROOT_PASSWORD" --admin 2>/dev/null || true
-    echo "[OK] PufferPanel admin created."
-fi
 SAEOF
 RUN chmod +x /usr/local/bin/setup-admin.sh
 
@@ -417,12 +385,6 @@ autorestart=false
 startsecs=0
 priority=50
 
-[program:pufferpanel]
-command=/usr/bin/pufferpanel run
-autostart=true
-autorestart=true
-priority=40
-
 [program:flask-api]
 command=python3 /app/api.py
 autostart=true
@@ -470,8 +432,6 @@ echo "root:$ROOT_PASSWORD" | chpasswd
 
 echo "[*] Setting up 3proxy config..."
 cat > /etc/3proxy/3proxy.cfg << EOF
-daemon
-
 log /var/log/3proxy.log D
 rotate 30
 
@@ -486,7 +446,7 @@ exec /usr/bin/supervisord -c /etc/supervisor/conf.d/services.conf
 EPEOF
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-EXPOSE 22 80 443 1080 8080 8081 8118 9090 5001 5657
+EXPOSE 22 80 443 1080 8080 8081 8118 9090 5001
 
 WORKDIR /app
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
