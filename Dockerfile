@@ -2,6 +2,8 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     ROOT_PASSWORD=ELMINYAWE \
+    SSH_USER=yaso \
+    SSH_PASSWORD=ELMINYAWE \
     TZ=UTC \
     LANG=en_US.UTF-8 \
     PYTHONUNBUFFERED=1
@@ -138,7 +140,7 @@ RUN git clone https://github.com/z3APA3A/3proxy.git /tmp/3proxy && \
     rm -rf /tmp/3proxy && \
     mkdir -p /etc/3proxy /var/log/supervisor /tmp/cf
 
-# ── Flask API (SSH + HTTPS + SOCKS5 only) ──────────────────────────────────
+# ── Flask API ───────────────────────────────────────────────────────────────
 RUN mkdir -p /app
 
 RUN cat > /app/api.py << 'APIEOF'
@@ -149,7 +151,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return jsonify({"name": "ELMINYAWE SERVER", "version": "v3.1-clean", "status": "running"})
+    return jsonify({"name": "ELMINYAWE SERVER", "version": "v3.2-ssh-yaso", "status": "running"})
 
 @app.route("/health")
 def health():
@@ -180,10 +182,10 @@ def services():
 @app.route("/proxy-info")
 def proxy_info():
     return jsonify({
-        "ssh": {"host": "0.0.0.0", "port": 22, "user": "root"},
+        "ssh": {"host": "0.0.0.0", "port": 22, "user": "yaso", "note": "TCP port 22 required"},
         "https_proxy": {"host": "0.0.0.0", "port": 443, "type": "tls", "backend": 8118},
         "http_redirect": {"host": "0.0.0.0", "port": 80, "type": "redirect"},
-        "socks5": {"host": "0.0.0.0", "port": 1080},
+        "socks5": {"host": "0.0.0.0", "port": 1080, "note": "SOCKS5 proxy"},
         "http": {"host": "0.0.0.0", "port": 8118}
     })
 
@@ -211,10 +213,12 @@ def inf():
         links = cf_urls
     return jsonify({
         "server": "ELMINYAWE",
-        "version": "v3.1-clean",
+        "version": "v3.2-ssh-yaso",
         "custom_domain": domain,
         "cloudflare_urls": cf_urls,
         "links": links,
+        "ssh_user": "yaso",
+        "ssh_password": "ELMINYAWE",
         "system": {
             "cpu": psutil.cpu_percent(),
             "ram": dict(psutil.virtual_memory()._asdict()),
@@ -233,15 +237,17 @@ export TERM=xterm
 while true; do
     clear
     echo "=============================================="
-    echo " ELMINYAWE SERVER v3.1 (SSH + HTTPS + SOCKS5)"
+    echo " ELMINYAWE SERVER v3.2 (SSH:yaso + HTTPS + SOCKS5)"
     echo "=============================================="
     echo ""
-    echo "[SSH]        Port: 22"
-    echo "[TTYD]       Port: 8081"
-    echo "[API]        Port: 5001"
-    echo "[Nginx]      Ports: 80, 443, 9090"
-    echo "[SOCKS5]     Port: 1080"
-    echo "[HTTP Proxy] Port: 8118"
+    echo "[SSH]         Port: 22  |  User: yaso  |  Pass: ELMINYAWE"
+    echo "[NOTE]        >>> Add TCP Port 22 in Railway Dashboard for SSH access <<<"
+    echo ""
+    echo "[TTYD]        Port: 8081"
+    echo "[API]         Port: 5001"
+    echo "[Nginx]       Ports: 80, 443, 9090"
+    echo "[SOCKS5]      Port: 1080  |  >>> Add TCP Port 1080 for SOCKS5 proxy <<<"
+    echo "[HTTP Proxy]  Port: 8118"
     echo ""
     echo "--- System Info ---"
     uptime
@@ -251,8 +257,8 @@ while true; do
     df -h / 2>/dev/null || echo "df not available"
     echo ""
     echo "--- Active Services ---"
-    ss -tlnp 2>/dev/null | grep -E ':(22|80|443|1080|8080|8081|8118|9090|5001|5657)' || \
-    netstat -tlnp 2>/dev/null | grep -E ':(22|80|443|1080|8080|8081|8118|9090|5001|5657)' || \
+    ss -tlnp 2>/dev/null | grep -E ':(22|80|443|1080|8080|8081|8118|9090|5001)' || \
+    netstat -tlnp 2>/dev/null | grep -E ':(22|80|443|1080|8080|8081|8118|9090|5001)' || \
     echo "No ss/netstat"
     echo ""
     echo "--- Cloudflare URLs ---"
@@ -295,10 +301,22 @@ RUN chmod +x /usr/local/bin/service-monitor.sh
 
 RUN cat > /usr/local/bin/setup-admin.sh << 'SAEOF'
 #!/bin/bash
-if [ -z "$ROOT_PASSWORD" ]; then
-    ROOT_PASSWORD="ELMINYAWE"
-fi
-echo "root:$ROOT_PASSWORD" | chpasswd
+USER=${SSH_USER:-yaso}
+PASS=${SSH_PASSWORD:-ELMINYAWE}
+ROOT_PASS=${ROOT_PASSWORD:-ELMINYAWE}
+
+echo "[*] Setting up root password..."
+echo "root:$ROOT_PASS" | chpasswd
+
+echo "[*] Creating user '$USER' with full root privileges..."
+id "$USER" &>/dev/null || useradd -m -s /bin/bash "$USER"
+echo "$USER:$PASS" | chpasswd
+usermod -aG sudo "$USER"
+echo "$USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USER
+chmod 440 /etc/sudoers.d/$USER
+
+echo "[OK] User '$USER' created with password '$PASS'"
+echo "[OK] User '$USER' added to sudoers (NOPASSWD)"
 echo "[OK] Root password set."
 SAEOF
 RUN chmod +x /usr/local/bin/setup-admin.sh
@@ -415,10 +433,13 @@ RUN cat > /usr/local/bin/entrypoint.sh << 'EPEOF'
 set -e
 
 echo "=========================================="
-echo " ELMINYAWE SERVER v3.1 (CLEAN)"
-echo " SSH + HTTPS + SOCKS5 only"
-echo " Starting initialization..."
+echo " ELMINYAWE SERVER v3.2"
+echo " SSH:yaso | HTTPS | SOCKS5"
 echo "=========================================="
+
+USER=${SSH_USER:-yaso}
+PASS=${SSH_PASSWORD:-ELMINYAWE}
+ROOT_PASS=${ROOT_PASSWORD:-ELMINYAWE}
 
 if [ -z "$ROOT_PASSWORD" ]; then
     export ROOT_PASSWORD="ELMINYAWE"
@@ -427,8 +448,45 @@ else
     echo "[OK] ROOT_PASSWORD is set."
 fi
 
-echo "[*] Setting up root password..."
-echo "root:$ROOT_PASSWORD" | chpasswd
+echo ""
+echo "=========================================="
+echo "  IMPORTANT SETUP NOTES"
+echo "=========================================="
+echo ""
+echo "  [SSH ACCESS]"
+echo "    User: $USER"
+echo "    Pass: $PASS"
+echo "    Port: 22"
+echo "    >>> YOU MUST ADD TCP PORT 22 IN RAILWAY DASHBOARD <<<"
+echo "    >>> Go to: Settings -> Networking -> Public Networking -> TCP:22 <<<"
+echo ""
+echo "  [SOCKS5 PROXY]"
+echo "    Port: 1080"
+echo "    >>> YOU MUST ADD TCP PORT 1080 FOR SOCKS5 TO WORK <<<"
+echo "    >>> Go to: Settings -> Networking -> Public Networking -> TCP:1080 <<<"
+echo ""
+echo "  [HTTPS PROXY]"
+echo "    Port: 443  (Use Domain/HTTPS in Railway)"
+echo ""
+echo "  [ROOT ACCESS]"
+echo "    User: root  |  Pass: $ROOT_PASS"
+echo "    System runs fully as root internally."
+echo "    User '$USER' has sudo NOPASSWD privileges."
+echo ""
+echo "=========================================="
+echo ""
+
+echo "[*] Setting up users and passwords..."
+echo "root:$ROOT_PASS" | chpasswd
+
+id "$USER" &>/dev/null || useradd -m -s /bin/bash "$USER"
+echo "$USER:$PASS" | chpasswd
+usermod -aG sudo "$USER"
+echo "$USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USER
+chmod 440 /etc/sudoers.d/$USER
+
+echo "[OK] User '$USER' created with sudo privileges."
+echo "[OK] Root password configured."
 
 echo "[*] Setting up 3proxy config..."
 cat > /etc/3proxy/3proxy.cfg << EOF
