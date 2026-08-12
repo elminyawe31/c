@@ -1,9 +1,12 @@
+
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     ROOT_PASSWORD=ELMINYAWE \
     SSH_USER=yaso \
     SSH_PASSWORD=ELMINYAWE \
+    PROXY_USER=yaso \
+    PROXY_PASSWORD=ELMINYAWE \
     TZ=UTC \
     LANG=en_US.UTF-8 \
     PYTHONUNBUFFERED=1
@@ -151,7 +154,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def index():
-    return jsonify({"name": "ELMINYAWE SERVER", "version": "v3.2-ssh-yaso", "status": "running"})
+    return jsonify({"name": "ELMINYAWE SERVER", "version": "v3.3-auth", "status": "running"})
 
 @app.route("/health")
 def health():
@@ -183,10 +186,10 @@ def services():
 def proxy_info():
     return jsonify({
         "ssh": {"host": "0.0.0.0", "port": 22, "user": "yaso", "note": "TCP port 22 required"},
-        "https_proxy": {"host": "0.0.0.0", "port": 443, "type": "tls", "backend": 8118},
+        "https_proxy": {"host": "0.0.0.0", "port": 443, "type": "tls", "backend": 8118, "auth": "yaso:ELMINYAWE"},
         "http_redirect": {"host": "0.0.0.0", "port": 80, "type": "redirect"},
-        "socks5": {"host": "0.0.0.0", "port": 1080, "note": "SOCKS5 proxy"},
-        "http": {"host": "0.0.0.0", "port": 8118}
+        "socks5": {"host": "0.0.0.0", "port": 1080, "auth": "yaso:ELMINYAWE", "note": "SOCKS5 proxy"},
+        "http": {"host": "0.0.0.0", "port": 8118, "auth": "yaso:ELMINYAWE"}
     })
 
 @app.route("/inf")
@@ -213,12 +216,14 @@ def inf():
         links = cf_urls
     return jsonify({
         "server": "ELMINYAWE",
-        "version": "v3.2-ssh-yaso",
+        "version": "v3.3-auth",
         "custom_domain": domain,
         "cloudflare_urls": cf_urls,
         "links": links,
         "ssh_user": "yaso",
         "ssh_password": "ELMINYAWE",
+        "proxy_user": "yaso",
+        "proxy_password": "ELMINYAWE",
         "system": {
             "cpu": psutil.cpu_percent(),
             "ram": dict(psutil.virtual_memory()._asdict()),
@@ -237,17 +242,20 @@ export TERM=xterm
 while true; do
     clear
     echo "=============================================="
-    echo " ELMINYAWE SERVER v3.2 (SSH:yaso + HTTPS + SOCKS5)"
+    echo " ELMINYAWE SERVER v3.3 (SSH:yaso + HTTPS + SOCKS5)"
     echo "=============================================="
     echo ""
     echo "[SSH]         Port: 22  |  User: yaso  |  Pass: ELMINYAWE"
     echo "[NOTE]        >>> Add TCP Port 22 in Railway Dashboard for SSH access <<<"
     echo ""
+    echo "[HTTPS PROXY] Port: 443  |  User: yaso  |  Pass: ELMINYAWE"
+    echo "[SOCKS5]      Port: 1080  |  User: yaso  |  Pass: ELMINYAWE"
+    echo "[NOTE]        >>> Add TCP Port 1080 for SOCKS5 proxy <<<"
+    echo ""
+    echo "[HTTP PROXY]  Port: 8118  |  User: yaso  |  Pass: ELMINYAWE"
     echo "[TTYD]        Port: 8081"
     echo "[API]         Port: 5001"
     echo "[Nginx]       Ports: 80, 443, 9090"
-    echo "[SOCKS5]      Port: 1080  |  >>> Add TCP Port 1080 for SOCKS5 proxy <<<"
-    echo "[HTTP Proxy]  Port: 8118"
     echo ""
     echo "--- System Info ---"
     uptime
@@ -433,13 +441,15 @@ RUN cat > /usr/local/bin/entrypoint.sh << 'EPEOF'
 set -e
 
 echo "=========================================="
-echo " ELMINYAWE SERVER v3.2"
-echo " SSH:yaso | HTTPS | SOCKS5"
+echo " ELMINYAWE SERVER v3.3"
+echo " SSH:yaso | HTTPS+Auth | SOCKS5+Auth"
 echo "=========================================="
 
 USER=${SSH_USER:-yaso}
 PASS=${SSH_PASSWORD:-ELMINYAWE}
 ROOT_PASS=${ROOT_PASSWORD:-ELMINYAWE}
+PROXY_USER=${PROXY_USER:-yaso}
+PROXY_PASS=${PROXY_PASSWORD:-ELMINYAWE}
 
 if [ -z "$ROOT_PASSWORD" ]; then
     export ROOT_PASSWORD="ELMINYAWE"
@@ -460,13 +470,23 @@ echo "    Port: 22"
 echo "    >>> YOU MUST ADD TCP PORT 22 IN RAILWAY DASHBOARD <<<"
 echo "    >>> Go to: Settings -> Networking -> Public Networking -> TCP:22 <<<"
 echo ""
+echo "  [HTTPS PROXY - VPN]"
+echo "    Domain: https://c-production-5e36.up.railway.app (example)"
+echo "    User: $PROXY_USER"
+echo "    Pass: $PROXY_PASS"
+echo "    Port: 443  (Use Domain/HTTPS in Railway)"
+echo ""
 echo "  [SOCKS5 PROXY]"
+echo "    User: $PROXY_USER"
+echo "    Pass: $PROXY_PASS"
 echo "    Port: 1080"
 echo "    >>> YOU MUST ADD TCP PORT 1080 FOR SOCKS5 TO WORK <<<"
 echo "    >>> Go to: Settings -> Networking -> Public Networking -> TCP:1080 <<<"
 echo ""
-echo "  [HTTPS PROXY]"
-echo "    Port: 443  (Use Domain/HTTPS in Railway)"
+echo "  [HTTP PROXY]"
+echo "    User: $PROXY_USER"
+echo "    Pass: $PROXY_PASS"
+echo "    Port: 8118"
 echo ""
 echo "  [ROOT ACCESS]"
 echo "    User: root  |  Pass: $ROOT_PASS"
@@ -488,16 +508,21 @@ chmod 440 /etc/sudoers.d/$USER
 echo "[OK] User '$USER' created with sudo privileges."
 echo "[OK] Root password configured."
 
-echo "[*] Setting up 3proxy config..."
+echo "[*] Setting up 3proxy config with auth..."
 cat > /etc/3proxy/3proxy.cfg << EOF
 log /var/log/3proxy.log D
 rotate 30
 
-proxy -p8118 -n -a
-socks -p1080 -n -a
+users $PROXY_USER:CL:$PROXY_PASS
 
-allow *
+auth strong
+allow $PROXY_USER
+
+proxy -p8118 -a
+socks -p1080 -a
 EOF
+
+echo "[OK] 3proxy configured with user: $PROXY_USER"
 
 echo "[*] Starting services via supervisord..."
 exec /usr/bin/supervisord -c /etc/supervisor/conf.d/services.conf
